@@ -1,5 +1,7 @@
 #include "BlendingAutomationBFL.h"
 
+#include "VTTParser.h"
+
 bool UBlendingAutomationBFL::ProcessAnimationSubstitution(
     ULevelSequence* LevelSequence,
     const FString& OriginalAnimationPath,
@@ -20,7 +22,9 @@ bool UBlendingAutomationBFL::ProcessAnimationSubstitution(
 
     OutNewAnimation = nullptr; // placeholder until you return a generated animation
 
-    
+    outMarkers = UVTTParser::ParseVTTFile(OriginalAnimationSrtPath);
+
+    UE_LOG(LogTemp, Display, TEXT("  - Parsed Markers: %d"), outMarkers.Num());
 
     return true;
 }

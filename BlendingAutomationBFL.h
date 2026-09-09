@@ -12,7 +12,6 @@ class BLENDINGAUTOMATIONEDITOR_API UBlendingAutomationBFL : public UBlueprintFun
     GENERATED_BODY()
 
 public:
-    UFUNCTION(BlueprintCallable, Category = "Blending Pipeline")
     static bool ProcessAnimationSubstitution(
         ULevelSequence* LevelSequence,
         const FString& OriginalAnimationPath,

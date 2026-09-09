@@ -13,7 +13,11 @@ public class BlendingAutomationEditor : ModuleRules
             "LevelSequence",
             "MovieScene",
             "MovieSceneTracks",
-            "UnrealEd"
+            "UnrealEd",
+
+            "SequencerAbstraction",
+            "UnrealVTTParser",
+            "AssetFileManagement"
         });
 
         PrivateDependencyModuleNames.AddRange(new string[] {
