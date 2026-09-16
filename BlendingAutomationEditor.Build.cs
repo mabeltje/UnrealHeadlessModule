@@ -13,6 +13,7 @@ public class BlendingAutomationEditor : ModuleRules
             "LevelSequence",
             "MovieScene",
             "MovieSceneTracks",
+            "MovieSceneTools",
             "UnrealEd",
 
             "SequencerAbstraction",
