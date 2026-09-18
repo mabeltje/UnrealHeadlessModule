@@ -8,6 +8,7 @@
 #include "Animation/AnimSequence.h"
 #include "Tracks/MovieSceneSkeletalAnimationTrack.h"
 #include "Sections/MovieSceneSkeletalAnimationSection.h"
+#include "SequencerAbstractionBPLibrary.h"
 #include "BlendingAutomationBFL.generated.h"
 
 UCLASS()
@@ -46,6 +47,7 @@ private:
     static bool SplitAnimationSections(
         UMovieSceneSkeletalAnimationSection* Section,
         UMovieScene* MovieScene,
-        const TArray<FMovieSceneMarkedFrame>& Markers);
+        const TArray<FMovieSceneMarkedFrame>& Markers,
+        TMap<int32, FSectionLabelEntry>& MarkerSectionMap);
 
 };
