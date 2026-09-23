@@ -2,14 +2,19 @@
 
 #include "CoreMinimal.h"
 #include "Kismet/BlueprintFunctionLibrary.h"
-#include "LevelSequence.h"
-#include "MovieSceneSection.h"
-#include "MovieScene.h"
-#include "Animation/AnimSequence.h"
-#include "Tracks/MovieSceneSkeletalAnimationTrack.h"
-#include "Sections/MovieSceneSkeletalAnimationSection.h"
-#include "SequencerAbstractionBPLibrary.h"
+#include "VTTParser.h" // Needed by value for TArray<FVTTEntry>
 #include "BlendingAutomationBFL.generated.h"
+
+// Forward declarations instead of #includes
+class ULevelSequence;
+class UMovieScene;
+class USkeleton;
+class UAnimSequence;
+class UMocapImportSubsystem;
+class UMovieSceneSkeletalAnimationTrack;
+class UMovieSceneSkeletalAnimationSection;
+struct FMovieSceneMarkedFrame;
+struct FSectionLabelEntry;
 
 UCLASS()
 class BLENDINGAUTOMATIONEDITOR_API UBlendingAutomationBFL : public UBlueprintFunctionLibrary
@@ -49,5 +54,34 @@ private:
         UMovieScene* MovieScene,
         const TArray<FMovieSceneMarkedFrame>& Markers,
         TMap<int32, FSectionLabelEntry>& MarkerSectionMap);
+
+    static bool LoadAnimSequence(
+        UMocapImportSubsystem* MocapSubsystem,
+        const FString& AnimationPath,
+        USkeleton* TargetSkeleton,
+        UAnimSequence*& OutAnimSequence);
+
+    static bool PlaceMarkersFromVTT(
+        const FString& OriginalAnimationSrtPath,
+        ULevelSequence* LevelSequence,
+        UMovieScene* MovieScene,
+        FFrameRate DisplayRate,
+        TArray<FMovieSceneMarkedFrame>& PlacedMarkers
+    );
+
+    static bool RemoveSectionFromLevelSequence(
+        ULevelSequence* LevelSequence,
+        UMovieScene* MovieScene,
+        int32 SubIndex,
+        TMap<int32, FSectionLabelEntry> MarkerSectionMap,
+        FFrameRate DisplayRate
+    );
+
+    static bool AddDonorAnimationSection(
+        UMovieSceneSkeletalAnimationTrack* Track, 
+        UAnimSequence* donorAnimSequence
+    );
+
+    static void PrintSections(UMovieScene* MovieScene);
 
 };
