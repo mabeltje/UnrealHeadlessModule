@@ -73,13 +73,40 @@ private:
         ULevelSequence* LevelSequence,
         UMovieScene* MovieScene,
         int32 SubIndex,
-        TMap<int32, FSectionLabelEntry> MarkerSectionMap,
+        TMap<int32, FSectionLabelEntry>& MarkerSectionMap,
         FFrameRate DisplayRate
     );
 
     static bool AddDonorAnimationSection(
+        ULevelSequence* LevelSequence,
+        UMovieScene* MovieScene,
+        FFrameRate DisplayRate,
+        TMap<int32, FSectionLabelEntry>& MarkerSectionMap,
         UMovieSceneSkeletalAnimationTrack* Track, 
-        UAnimSequence* donorAnimSequence
+        UAnimSequence* donorAnimSequence,
+        int32 SubIndex,
+        const FString& Label
+    );
+
+    static bool ResetLevelSequence(
+        ULevelSequence* LevelSequence,
+        UMovieScene* MovieScene,
+        FGuid SkeletalMeshBindingId
+    );
+
+    static bool BlendAnimationSections(
+        ULevelSequence* LevelSequence,
+        UMovieScene* MovieScene,
+        FFrameRate DisplayRate,
+        TMap<int32, FSectionLabelEntry>& MarkerSectionMap,
+        int32 SubIndex
+    );
+
+    static bool BakeAnimationSequence(
+        ULevelSequence* LevelSequence,
+        UMovieScene* MovieScene,
+        FGuid SkeletalMeshBindingId,
+        const FString& Label
     );
 
     static void PrintSections(UMovieScene* MovieScene);
