@@ -84,7 +84,7 @@ private:
         TMap<int32, FSectionLabelEntry>& MarkerSectionMap,
         UMovieSceneSkeletalAnimationTrack* Track, 
         UAnimSequence* donorAnimSequence,
-        int32 SubIndex,
+        int32 SectionIndex,
         const FString& Label
     );
 
@@ -99,7 +99,7 @@ private:
         UMovieScene* MovieScene,
         FFrameRate DisplayRate,
         TMap<int32, FSectionLabelEntry>& MarkerSectionMap,
-        int32 SubIndex
+        int32 SectionIndex
     );
 
     static bool BakeAnimationSequence(
@@ -107,6 +107,24 @@ private:
         UMovieScene* MovieScene,
         FGuid SkeletalMeshBindingId,
         const FString& Label
+    );
+
+    static bool FitTailSections(
+        ULevelSequence* LevelSequence,
+        UMovieScene* MovieScene,
+        FFrameRate DisplayRate,
+        TMap<int32, FSectionLabelEntry>& MarkerSectionMap,
+        int32 SectionIndex,
+        UAnimSequence* donorAnimSequence
+    );
+
+    static bool MatchSectionsToBone(
+        ULevelSequence* LevelSequence,
+        UMovieScene* MovieScene,
+        FFrameRate DisplayRate,
+        TMap<int32, FSectionLabelEntry>& MarkerSectionMap,
+        int32 SectionIndex,
+        USkeletalMesh* TargetSkeletalMesh
     );
 
     static void PrintSections(UMovieScene* MovieScene);

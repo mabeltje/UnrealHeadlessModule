@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "Engine/DataAsset.h"
 #include "Misc/FrameRate.h"
+#include "Engine/SkeletalMesh.h"
 #include "SkeletalSequenceDataAsset.generated.h"
 
 class USkeleton;
@@ -29,6 +30,9 @@ public:
     /** Direct reference to the Skeleton asset */
     UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation Setup")
     TSoftObjectPtr<USkeleton> Skeleton;
+
+    UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation Setup")
+    TSoftObjectPtr<USkeletalMesh> SkeletalMesh;
 
     /** Direct reference to the Animation Sequence asset */
     UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation Setup")
