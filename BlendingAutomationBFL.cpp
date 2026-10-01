@@ -14,46 +14,6 @@
 
 DEFINE_LOG_CATEGORY(LogBlendingAuto);
 
-// ----------------------------------------------------------------------------------
-// Internal Context: Holds all parameters and transient data for the pipeline run
-// ----------------------------------------------------------------------------------
-struct FSubstitutionPipelineContext
-{
-    // Inputs
-    ULevelSequence* LevelSequence = nullptr;
-    FString OriginalAnimationPath;
-    FString OriginalAnimationSrtPath;
-    FString DonorAnimationPath;
-    FString Label;
-    int32 SubIndex = INDEX_NONE;
-
-    // Config & Engine Assets
-    USkeleton* TargetSkeleton = nullptr;
-    USkeletalMesh* TargetSkeletalMesh = nullptr;
-    UMocapImportSubsystem* MocapSubsystem = nullptr;
-
-    // Sequencer Elements
-    UMovieScene* MovieScene = nullptr;
-    FFrameRate DisplayRate;
-    FFrameRate TickResolution;
-    FGuid SkeletalMeshBindingId;
-    UMovieSceneSkeletalAnimationTrack* Track = nullptr;
-
-    // Working Assets & Data
-    UAnimSequence* OriginalAnim = nullptr;
-    UAnimSequence* DonorAnim = nullptr;
-    TArray<FMovieSceneMarkedFrame> PlacedMarkers;
-    TMap<int32, FSectionLabelEntry> MarkerSectionMap;
-    int32 SectionIndex = INDEX_NONE;
-
-    // Helper for standardized error logging
-    bool Fail(const FString& Message)
-    {
-        UE_LOG(LogBlendingAuto, Error, TEXT("%s"), *Message);
-        return false;
-    }
-};
-
 bool UBlendingAutomationBFL::ProcessAnimationSubstitution(
     ULevelSequence* LevelSequence,
     const FString& OriginalAnimationPath,
@@ -63,180 +23,77 @@ bool UBlendingAutomationBFL::ProcessAnimationSubstitution(
     int32 SubIndex,
     UAnimSequence*& OutNewAnimation)
 {   
-    // Load asset data from SkeletalSequenceDataAsset
-    USkeletalSequenceDataAsset* SkeletalSequenceDataAsset = LoadObject<USkeletalSequenceDataAsset>(nullptr, TEXT("/Game/Config/AutomationConfig.AutomationConfig"));
-    if (!SkeletalSequenceDataAsset)
-    {
-        UE_LOG(LogBlendingAuto, Error, TEXT("Failed to load SkeletalSequenceDataAsset."));
-        return false;
-    }
-    
-    // Load the target skeleton from the SkeletalSequenceDataAsset
-    USkeleton* TargetSkeleton = SkeletalSequenceDataAsset->Skeleton.LoadSynchronous();
-    if (!TargetSkeleton)
-    {
-        UE_LOG(LogBlendingAuto, Error, TEXT("Target Skeleton is null. Please ensure the SkeletalSequenceDataAsset has a valid Skeleton reference."));
-        return false;
-    }
 
-    USkeletalMesh* TargetSkeletalMesh = SkeletalSequenceDataAsset->SkeletalMesh.LoadSynchronous();
-    if (!TargetSkeletalMesh)
-    {
-        UE_LOG(LogBlendingAuto, Error, TEXT("Target Skeletal Mesh is null. Please ensure the SkeletalSequenceDataAsset has a valid SkeletalMesh reference."));
-        return false;
-    }
-    
-    // Obtain the MocapImportSubsystem
-    UMocapImportSubsystem* MocapSubsystem = GEditor->GetEditorSubsystem<UMocapImportSubsystem>();
-    if (!MocapSubsystem)
-    {
-        UE_LOG(LogBlendingAuto, Error, TEXT("Could not obtain UMocapImportSubsystem!"));
-        return false;
-    }
-    
-    // Validate Input Parameters
-    if (!ValidateInputParameters(LevelSequence, OriginalAnimationPath, OriginalAnimationSrtPath, DonorAnimationPath, Label, SubIndex))
-    {
-        return false;
-    }
-    
-    // Get the MovieScene and DisplayRate from the LevelSequence
-    UMovieScene* MovieScene = LevelSequence->GetMovieScene();
-    FFrameRate DisplayRate = MovieScene->GetDisplayRate();
+    OutNewAnimation = nullptr;
 
-    UAnimSequence* originalAnimSequence;
-    UAnimSequence* donorAnimSequence;
-    bool bLoadSuccess = LoadAnimSequence(MocapSubsystem, OriginalAnimationPath, TargetSkeleton, originalAnimSequence);
-    bool bLoadDonorSuccess = LoadAnimSequence(MocapSubsystem, DonorAnimationPath, TargetSkeleton, donorAnimSequence);
-    
-    if (!bLoadSuccess || !originalAnimSequence)
-    {
-        UE_LOG(LogBlendingAuto, Error, TEXT("Failed to load original animation sequence from path: %s"), *OriginalAnimationPath);
-        return false;
-    }
-    if (!bLoadDonorSuccess || !donorAnimSequence)
-    {
-        UE_LOG(LogBlendingAuto, Error, TEXT("Failed to load donor animation sequence from path: %s"), *DonorAnimationPath);
-        return false;
-    }
-
-    UE_LOG(LogBlendingAuto, Display, TEXT("Successfully loaded original and donor animation sequences."));
-
-    // Get the binding guid for the skeletal mesh track
+    // --- Stage 1: Load and Validate ---
+    USkeleton* TargetSkeleton = nullptr;
+    USkeletalMesh* TargetSkeletalMesh = nullptr;
+    UMovieScene* MovieScene = nullptr;
+    FFrameRate DisplayRate;
+    FFrameRate TickResolution;
+    UAnimSequence* OriginalAnim = nullptr;
+    UAnimSequence* DonorAnim = nullptr;
+    UMocapImportSubsystem* MocapSubsystem = nullptr;
+    UMovieSceneSkeletalAnimationTrack* Track = nullptr;
     FGuid SkeletalMeshBindingId;
-    TArray<UMovieSceneSkeletalAnimationTrack*> OutTracks;
-    FindAllTracks(MovieScene, OutTracks);
-    if (OutTracks.Num() > 0)
-    {
-        MovieScene->FindTrackBinding(*OutTracks[0], SkeletalMeshBindingId);
-    }
-    // Save the track
-    UMovieSceneSkeletalAnimationTrack* Track = OutTracks[0];
-
-    if (!SkeletalMeshBindingId.IsValid())
-    {
-        UE_LOG(LogBlendingAuto, Error, TEXT("Failed to find a valid binding for the skeletal animation track."));
-        return false;
-    }
-
-    // Reset the level sequence to remove all existing tracks and markers
-    bool bResetSuccess = ResetLevelSequence(LevelSequence, MovieScene, FGuid());
-    if (!bResetSuccess)
-    {
-        UE_LOG(LogBlendingAuto, Warning, TEXT("Failed to reset the level sequence."));
-        return false;
-    }
-    
-    // Place markers from the VTT file into the level sequence
-    TArray<FMovieSceneMarkedFrame> PlacedMarkers;
-    bool bMarkersPlaced = PlaceMarkersFromVTT(OriginalAnimationSrtPath, LevelSequence, MovieScene, DisplayRate, PlacedMarkers);
-    if (!bMarkersPlaced)
-    {
-        UE_LOG(LogBlendingAuto, Warning, TEXT("No markers were placed from the VTT file."));
-        return false;
-    }  
-    
-    // Load animation into level sequence
-    FSequenceOpenResult ResultError;
-    UMovieSceneSkeletalAnimationSection* NewSection = USequencerAbstractionBPLibrary::AddAnimSectionToBinding(LevelSequence, SkeletalMeshBindingId, originalAnimSequence, 0, 0, false, ResultError);
-
-    if (NewSection == nullptr)
-    {
-        UE_LOG(LogBlendingAuto, Error, TEXT("Failed to add original animation section to the level sequence."));
-        return false;
-    }
-    
-    // Cut the animation into segments based on the markers
     TMap<int32, FSectionLabelEntry> MarkerSectionMap;
-    bool bSplitSuccess = SplitAnimationSections(NewSection, MovieScene, PlacedMarkers, MarkerSectionMap);
-    // Now only split the section that matches the subindex
-    // bool bSplitSuccess = SplitAnimationSection(NewSection, MovieScene, PlacedMarkers, MarkerSectionMap, SubIndex, Label);
+
+    if (!LoadAndValidate(
+            LevelSequence, OriginalAnimationPath, OriginalAnimationSrtPath, DonorAnimationPath, Label, SubIndex,
+            TargetSkeleton, TargetSkeletalMesh, MovieScene, DisplayRate, TickResolution,
+            OriginalAnim, DonorAnim, MocapSubsystem, Track, SkeletalMeshBindingId))
+    {
+        return false;
+    }
+    UE_LOG(LogBlendingAuto, Display, TEXT("Successfully loaded and validated all necessary assets and parameters."));
+
+    // --- Stage 2: Place Markers and Split Sections ---
+
+    if (!PlaceMarkersAndSplit(LevelSequence, MovieScene, DisplayRate, OriginalAnimationSrtPath, OriginalAnim, SkeletalMeshBindingId, SubIndex, Label, MarkerSectionMap))
+    {
+        return false;
+    }
+    UE_LOG(LogBlendingAuto, Display, TEXT("Successfully placed markers and split animation sections."));
+
+    // --- Stage 3: Remove Section and Add Donor Animation ---
+    if (!ReplaceSection(LevelSequence, MovieScene, DisplayRate, MarkerSectionMap, Track, DonorAnim, SubIndex, Label))
+    {
+        return false;
+    }
+    UE_LOG(LogBlendingAuto, Display, TEXT("Successfully replaced section with donor animation."));
+
+    // // --- Stage 4: Blend Sections and Match to Bone ---
+    // if (!BlendAnimationSectionsAndMatchToBone(LevelSequence, MovieScene, DisplayRate, MarkerSectionMap, SubIndex, TargetSkeletalMesh))
+    // {
+    //     return false;
+    // }
+    // UE_LOG(LogBlendingAuto, Display, TEXT("Successfully blended animation sections and matched bones."));
+
+    // // --- Stage 5: Bake and Save ---
+    // if (!BakeAnimationSequence(LevelSequence, MovieScene, SkeletalMeshBindingId, Label))
+    // {
+    //     UE_LOG(LogBlendingAuto, Warning, TEXT("Failed to bake animation sequence."));
+    //     return false;
+    // }
+
+    // FString BakedAssetPath = FString::Printf(TEXT("/Game/Animations/BlendingAutomation/%s_Baked.%s_Baked"), *Label, *Label);
+    // OutNewAnimation = LoadObject<UAnimSequence>(nullptr, *BakedAssetPath);
     
-    if (!bSplitSuccess)
-    {
-        UE_LOG(LogBlendingAuto, Warning, TEXT("Failed to split animation sections based on markers."));
-        return false;
-    }
+    USequencerAbstractionBPLibrary::SaveAsset(LevelSequence);
+    return (OutNewAnimation != nullptr);
+}
 
-    // PrintSections(MovieScene);
 
-    // print the marker section map for debugging
-    for (const auto& Pair : MarkerSectionMap)
-    {
-        int32 Index = Pair.Key;
-        const FSectionLabelEntry& Entry = Pair.Value;
-        FString SectionName = Entry.Section ? Entry.Section->GetName() : TEXT("nullptr");
-        UE_LOG(LogBlendingAuto, Display, TEXT("MarkerSectionMap - Index: %d, Label: %s, Section: %s, GlossIndex: %d"), Index, *Entry.Label, *SectionName, Entry.GlossIndex);
-    }
-
-    // get the index from the marker section map where the glossIndex is equal to the subindex
-    int32 SectionIndex = INDEX_NONE;
-    for (const auto& Pair : MarkerSectionMap)
-    {
-        if (Pair.Value.GlossIndex == SubIndex)
-        {
-            SectionIndex = Pair.Key;
-            break;
-        }
-    }
-
-    if (SectionIndex == INDEX_NONE)
-    {
-        UE_LOG(LogBlendingAuto, Warning, TEXT("Could not find a section with GlossIndex %d in MarkerSectionMap."), SubIndex);
-        return false;
-    }
-
-    // // Hardcode the SectionIndex to the SectionIndex, because we now only split the animation in 3 sections
-    // int32 SectionIndex = 1;
-
-    // Remove a section from the level sequence
-    bool bRemoveSuccess = RemoveSectionFromLevelSequence(LevelSequence, MovieScene, SectionIndex, MarkerSectionMap, DisplayRate);
-
-    if (!bRemoveSuccess)
-    {
-        UE_LOG(LogBlendingAuto, Warning, TEXT("Failed to remove section from level sequence."));
-        return false;
-    }
-
-    // first move the tail sections to fit the new section, otherwise the new section will be placed on new track
-    bool bMoveSuccess = FitTailSections(LevelSequence, MovieScene, DisplayRate, MarkerSectionMap, SectionIndex, donorAnimSequence);
-    if (!bMoveSuccess)
-    {
-        UE_LOG(LogBlendingAuto, Warning, TEXT("Failed to move tail sections to fit the new section."));
-        return false;
-    }
-
-    // Add the donor animation section to the level sequence
-    bool AddSuccess = AddDonorAnimationSection(LevelSequence, MovieScene, DisplayRate, MarkerSectionMap, Track, donorAnimSequence, SectionIndex, Label);
-    
-    if (!AddSuccess)
-    {
-        UE_LOG(LogBlendingAuto, Warning, TEXT("Failed to add donor animation section to the level sequence."));
-        return false;
-    }
-
-    UE_LOG(LogBlendingAuto, Display, TEXT("Successfully added donor animation section to the level sequence."));
-    
+bool UBlendingAutomationBFL::BlendAnimationSectionsAndMatchToBone(
+    ULevelSequence* LevelSequence,
+    UMovieScene* MovieScene,
+    FFrameRate DisplayRate,
+    TMap<int32, FSectionLabelEntry>& MarkerSectionMap,
+    int32 SectionIndex,
+    USkeletalMesh* TargetSkeletalMesh
+)
+{
     // move the segments to blend together 
     bool bBlendSuccess = BlendAnimationSections(LevelSequence, MovieScene, DisplayRate, MarkerSectionMap, SectionIndex);
     if (!bBlendSuccess)
@@ -274,20 +131,232 @@ bool UBlendingAutomationBFL::ProcessAnimationSubstitution(
         UE_LOG(LogBlendingAuto, Warning, TEXT("Failed to set playback range for the level sequence."));
     }
 
-    bool bBakeSuccess = BakeAnimationSequence(LevelSequence, MovieScene, SkeletalMeshBindingId, Label);
-    if (!bBakeSuccess)
+    return true;
+}
+
+bool UBlendingAutomationBFL::ReplaceSection(
+    ULevelSequence* LevelSequence,
+    UMovieScene* MovieScene,
+    FFrameRate DisplayRate,
+    TMap<int32, FSectionLabelEntry>& MarkerSectionMap,
+    UMovieSceneSkeletalAnimationTrack* Track, 
+    UAnimSequence* donorAnimSequence,
+    int32 SubIndex,
+    const FString& Label
+)
+{   
+    PrintSections(MovieScene);
+
+    // print the marker section map for debugging
+    for (const auto& Pair : MarkerSectionMap)
     {
-        UE_LOG(LogBlendingAuto, Warning, TEXT("Failed to bake animation sequence."));
+        int32 Index = Pair.Key;
+        const FSectionLabelEntry& Entry = Pair.Value;
+        FString SectionName = Entry.Section ? Entry.Section->GetName() : TEXT("nullptr");
+        UE_LOG(LogBlendingAuto, Display, TEXT("MarkerSectionMap - Index: %d, Label: %s, Section: %s, GlossIndex: %d"), Index, *Entry.Label, *SectionName, Entry.GlossIndex);
+    }
+
+    // get the index from the marker section map where the glossIndex is equal to the subindex
+    // int32 SectionIndex = INDEX_NONE;
+    // for (const auto& Pair : MarkerSectionMap)
+    // {
+    //     if (Pair.Value.GlossIndex == SubIndex)
+    //     {
+    //         SectionIndex = Pair.Key;
+    //         break;
+    //     }
+    // }
+
+    // if (SectionIndex == INDEX_NONE)
+    // {
+    //     UE_LOG(LogBlendingAuto, Warning, TEXT("Could not find a section with GlossIndex %d in MarkerSectionMap."), SubIndex);
+    //     return false;
+    // }
+
+    // Hardcode the SectionIndex to the SectionIndex, because we now only split the animation in 3 sections
+    int32 SectionIndex = 1;
+
+    // Remove a section from the level sequence
+    bool bRemoveSuccess = RemoveSectionFromLevelSequence(LevelSequence, MovieScene, SectionIndex, MarkerSectionMap, DisplayRate);
+
+    if (!bRemoveSuccess)
+    {
+        UE_LOG(LogBlendingAuto, Warning, TEXT("Failed to remove section from level sequence."));
         return false;
     }
 
-    // Load the newly baked asset so OutNewAnimation actually returns something to Python
-    FString BakedAssetPath = FString::Printf(TEXT("/Game/Animations/BlendingAutomation/%s_Baked.%s_Baked"), *Label, *Label);
-    OutNewAnimation = LoadObject<UAnimSequence>(nullptr, *BakedAssetPath);
-    
-    // Save the level sequence after modifications
-    USequencerAbstractionBPLibrary::SaveAsset(LevelSequence);
+    // first move the tail sections to fit the new section, otherwise the new section will be placed on new track
+    bool bMoveSuccess = FitTailSections(LevelSequence, MovieScene, DisplayRate, MarkerSectionMap, SectionIndex, donorAnimSequence);
+    if (!bMoveSuccess)
+    {
+        UE_LOG(LogBlendingAuto, Warning, TEXT("Failed to move tail sections to fit the new section."));
+        return false;
+    }
 
+    // Add the donor animation section to the level sequence
+    bool AddSuccess = AddDonorAnimationSection(LevelSequence, MovieScene, DisplayRate, MarkerSectionMap, Track, donorAnimSequence, SectionIndex, Label);
+    
+    if (!AddSuccess)
+    {
+        UE_LOG(LogBlendingAuto, Warning, TEXT("Failed to add donor animation section to the level sequence."));
+        return false;
+    }
+
+    return true;
+}
+
+bool UBlendingAutomationBFL::PlaceMarkersAndSplit(
+    ULevelSequence* LevelSequence,
+    UMovieScene* MovieScene,
+    FFrameRate DisplayRate,
+    const FString& OriginalAnimationSrtPath,
+    UAnimSequence* originalAnimSequence,
+    FGuid SkeletalMeshBindingId,
+    int32 SubIndex,
+    const FString& Label,
+    TMap<int32, FSectionLabelEntry>& OutMarkerSectionMap
+)
+{
+    // Place markers from the VTT file into the level sequence
+    TArray<FMovieSceneMarkedFrame> PlacedMarkers;
+    bool bMarkersPlaced = PlaceMarkersFromVTT(OriginalAnimationSrtPath, LevelSequence, MovieScene, DisplayRate, PlacedMarkers);
+    if (!bMarkersPlaced)
+    {
+        UE_LOG(LogBlendingAuto, Warning, TEXT("No markers were placed from the VTT file."));
+        return false;
+    }  
+    
+    // Load animation into level sequence
+    FSequenceOpenResult ResultError;
+    UMovieSceneSkeletalAnimationSection* NewSection = USequencerAbstractionBPLibrary::AddAnimSectionToBinding(LevelSequence, SkeletalMeshBindingId, originalAnimSequence, 0, 0, false, ResultError);
+    
+    if (NewSection == nullptr)
+    {
+        UE_LOG(LogBlendingAuto, Error, TEXT("Failed to add original animation section to the level sequence."));
+        return false;
+    }
+
+    // Cut the animation into segments based on the markers
+    // bool bSplitSuccess = SplitAnimationSections(NewSection, MovieScene, PlacedMarkers, OutMarkerSectionMap);
+    // Now only split the section that matches the subindex
+    bool bSplitSuccess = SplitAnimationSection(NewSection, MovieScene, PlacedMarkers, OutMarkerSectionMap, SubIndex, Label);
+    
+    if (!bSplitSuccess)
+    {
+        UE_LOG(LogBlendingAuto, Warning, TEXT("Failed to split animation sections based on markers."));
+        return false;
+    }
+
+    return true;
+}
+
+bool UBlendingAutomationBFL::LoadAndValidate(
+    ULevelSequence* LevelSequence,
+    const FString& OriginalAnimationPath,
+    const FString& OriginalAnimationSrtPath,
+    const FString& DonorAnimationPath,
+    const FString& Label,
+    int32 SubIndex,
+    USkeleton*& OutSkeleton,
+    USkeletalMesh*& OutMesh,
+    UMovieScene*& OutMovieScene,
+    FFrameRate& OutDisplayRate,
+    FFrameRate& OutTickResolution,
+    UAnimSequence*& OutOriginalAnim,
+    UAnimSequence*& OutDonorAnim,
+    UMocapImportSubsystem*& OutMocapSubsystem,
+    UMovieSceneSkeletalAnimationTrack*& OutTrack,
+    FGuid& OutSkeletalMeshBindingId
+)
+{   
+    // Validate Input Parameters
+    if (!ValidateInputParameters(LevelSequence, OriginalAnimationPath, OriginalAnimationSrtPath, DonorAnimationPath, Label, SubIndex))
+    {   
+        UE_LOG(LogBlendingAuto, Error, TEXT("Input parameter validation failed."));
+        return false;
+    }
+
+    // Load config
+    USkeletalSequenceDataAsset* SkeletalSequenceDataAsset = LoadObject<USkeletalSequenceDataAsset>(nullptr, TEXT("/Game/Config/AutomationConfig.AutomationConfig"));
+    if (!SkeletalSequenceDataAsset)
+    {
+        UE_LOG(LogBlendingAuto, Error, TEXT("Failed to load SkeletalSequenceDataAsset."));
+        return false;
+    }
+    
+    // Load the target skeleton from the SkeletalSequenceDataAsset
+    OutSkeleton = SkeletalSequenceDataAsset->Skeleton.LoadSynchronous();
+    if (!OutSkeleton)
+    {
+        UE_LOG(LogBlendingAuto, Error, TEXT("Target Skeleton is null. Please ensure the SkeletalSequenceDataAsset has a valid Skeleton reference."));
+        return false;
+    }
+
+    OutMesh = SkeletalSequenceDataAsset->SkeletalMesh.LoadSynchronous();
+    if (!OutMesh)
+    {
+        UE_LOG(LogBlendingAuto, Error, TEXT("Target Skeletal Mesh is null. Please ensure the SkeletalSequenceDataAsset has a valid SkeletalMesh reference."));
+        return false;
+    }
+    
+    // Subsystem
+    OutMocapSubsystem = GEditor->GetEditorSubsystem<UMocapImportSubsystem>();
+    if (!OutMocapSubsystem)
+    {
+        UE_LOG(LogBlendingAuto, Error, TEXT("Could not obtain UMocapImportSubsystem!"));
+        return false;
+    }
+    
+    // Get the MovieScene and Rates
+    OutMovieScene = LevelSequence->GetMovieScene();
+    if (!OutMovieScene)
+    {
+        UE_LOG(LogBlendingAuto, Error, TEXT("LevelSequence does not have a valid MovieScene."));
+        return false;
+    }
+    OutDisplayRate = OutMovieScene->GetDisplayRate();
+    OutTickResolution = OutMovieScene->GetTickResolution();
+
+    if (!LoadAnimSequence(OutMocapSubsystem, OriginalAnimationPath, OutSkeleton, OutOriginalAnim))
+    {
+        UE_LOG(LogBlendingAuto, Error, TEXT("Failed to import original animation: %s"), *OriginalAnimationPath);
+        return false;
+    }
+
+    if (!LoadAnimSequence(OutMocapSubsystem, DonorAnimationPath, OutSkeleton, OutDonorAnim))
+    {
+        UE_LOG(LogBlendingAuto, Error, TEXT("Failed to import donor animation: %s"), *DonorAnimationPath);
+        return false;
+    }
+
+    // UE_LOG(LogBlendingAuto, Display, TEXT("Successfully loaded original and donor animation sequences."));
+
+    // Get the binding guid for the skeletal mesh track
+    TArray<UMovieSceneSkeletalAnimationTrack*> OutTracks;
+    FindAllTracks(OutMovieScene, OutTracks);
+    if (OutTracks.Num() > 0)
+    {
+        OutMovieScene->FindTrackBinding(*OutTracks[0], OutSkeletalMeshBindingId);
+    }
+
+    // Save the track
+    OutTrack = OutTracks[0];
+
+    if (!OutSkeletalMeshBindingId.IsValid())
+    {
+        UE_LOG(LogBlendingAuto, Error, TEXT("Failed to find a valid binding for the skeletal animation track."));
+        return false;
+    }
+
+    // Reset the level sequence to remove all existing tracks and markers
+    bool bResetSuccess = ResetLevelSequence(LevelSequence, OutMovieScene, FGuid());
+    if (!bResetSuccess)
+    {
+        UE_LOG(LogBlendingAuto, Warning, TEXT("Failed to reset the level sequence."));
+        return false;
+    }
+
+    // UE_LOG(LogBlendingAuto, Display, TEXT("Validation and loading completed successfully."));
     return true;
 }
 

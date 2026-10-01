@@ -35,6 +35,54 @@ public:
         UAnimSequence*& OutNewAnimation);
 
 private:
+    
+    static bool LoadAndValidate(
+        ULevelSequence* LevelSequence,
+        const FString& OriginalAnimationPath,
+        const FString& OriginalAnimationSrtPath,
+        const FString& DonorAnimationPath,
+        const FString& Label,
+        int32 SubIndex,
+        USkeleton*& OutSkeleton,
+        USkeletalMesh*& OutMesh,
+        UMovieScene*& OutMovieScene,
+        FFrameRate& OutDisplayRate,
+        FFrameRate& OutTickResolution,
+        UAnimSequence*& OutOriginalAnim,
+        UAnimSequence*& OutDonorAnim,
+        UMocapImportSubsystem*& OutMocapSubsystem,
+        UMovieSceneSkeletalAnimationTrack*& OutTrack,
+        FGuid& OutSkeletalMeshBindingId);
+
+    static bool PlaceMarkersAndSplit(
+        ULevelSequence* LevelSequence,
+        UMovieScene* MovieScene,
+        FFrameRate DisplayRate,
+        const FString& OriginalAnimationSrtPath,
+        UAnimSequence* originalAnimSequence,
+        FGuid SkeletalMeshBindingId,
+        int32 SubIndex,
+        const FString& Label,
+        TMap<int32, FSectionLabelEntry>& OutMarkerSectionMap);
+
+    static bool ReplaceSection(
+        ULevelSequence* LevelSequence,
+        UMovieScene* MovieScene,
+        FFrameRate DisplayRate,
+        TMap<int32, FSectionLabelEntry>& MarkerSectionMap,
+        UMovieSceneSkeletalAnimationTrack* Track,
+        UAnimSequence* DonorAnim,
+        int32 SubIndex,
+        const FString& Label);
+
+    static bool BlendAnimationSectionsAndMatchToBone(
+        ULevelSequence* LevelSequence,
+        UMovieScene* MovieScene,
+        FFrameRate DisplayRate,
+        TMap<int32, FSectionLabelEntry>& MarkerSectionMap,
+        int32 SectionIndex,
+        USkeletalMesh* TargetSkeletalMesh);
+
     static bool ValidateInputParameters(
         ULevelSequence* LevelSequence,
         const FString& OriginalAnimationPath,
