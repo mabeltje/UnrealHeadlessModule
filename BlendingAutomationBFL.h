@@ -16,6 +16,8 @@ class UMovieSceneSkeletalAnimationSection;
 struct FMovieSceneMarkedFrame;
 struct FSectionLabelEntry;
 
+DECLARE_LOG_CATEGORY_EXTERN(LogBlendingAuto, Log, All);
+
 UCLASS()
 class BLENDINGAUTOMATIONEDITOR_API UBlendingAutomationBFL : public UBlueprintFunctionLibrary
 {
@@ -54,6 +56,14 @@ private:
         UMovieScene* MovieScene,
         const TArray<FMovieSceneMarkedFrame>& Markers,
         TMap<int32, FSectionLabelEntry>& MarkerSectionMap);
+    
+    static bool SplitAnimationSection(
+        UMovieSceneSkeletalAnimationSection* Section,
+        UMovieScene* MovieScene,
+        const TArray<FMovieSceneMarkedFrame>& Markers,
+        TMap<int32, FSectionLabelEntry>& MarkerSectionMap,
+        int32 SubIndex,
+        const FString& Label);
 
     static bool LoadAnimSequence(
         UMocapImportSubsystem* MocapSubsystem,
