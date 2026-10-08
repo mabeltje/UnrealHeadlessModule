@@ -106,11 +106,7 @@ bool UBlendingAutomationBFL::ProcessAnimationSubstitution(
         TEXT("")
     );
 
-    if (ExportResult.success)
-    {
-        UE_LOG(LogBlendingAuto, Display, TEXT("Exported FBX to: %s"), *ExportResult.exportedFilePath);
-    }
-    else
+    if (!ExportResult.success)
     {
         UE_LOG(LogBlendingAuto, Error, TEXT("Failed to export FBX: %s"), *ExportResult.message);
     }
