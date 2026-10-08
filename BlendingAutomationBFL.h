@@ -31,6 +31,7 @@ public:
         const FString& OriginalAnimationSrtPath,
         const FString& DonorAnimationPath,
         const FString& Label,
+        const FString& OutputAnimationPath,
         int32 SubIndex,
         UAnimSequence*& OutNewAnimation);
 
