@@ -63,22 +63,22 @@ bool UBlendingAutomationBFL::ProcessAnimationSubstitution(
     }
     UE_LOG(LogBlendingAuto, Display, TEXT("Successfully replaced section with donor animation."));
 
-    // // --- Stage 4: Blend Sections and Match to Bone ---
-    // if (!BlendAnimationSectionsAndMatchToBone(LevelSequence, MovieScene, DisplayRate, MarkerSectionMap, SubIndex, TargetSkeletalMesh))
-    // {
-    //     return false;
-    // }
-    // UE_LOG(LogBlendingAuto, Display, TEXT("Successfully blended animation sections and matched bones."));
+    // --- Stage 4: Blend Sections and Match to Bone ---
+    if (!BlendAnimationSectionsAndMatchToBone(LevelSequence, MovieScene, DisplayRate, MarkerSectionMap, SubIndex, TargetSkeletalMesh))
+    {
+        return false;
+    }
+    UE_LOG(LogBlendingAuto, Display, TEXT("Successfully blended animation sections and matched bones."));
 
-    // // --- Stage 5: Bake and Save ---
-    // if (!BakeAnimationSequence(LevelSequence, MovieScene, SkeletalMeshBindingId, Label))
-    // {
-    //     UE_LOG(LogBlendingAuto, Warning, TEXT("Failed to bake animation sequence."));
-    //     return false;
-    // }
+    // --- Stage 5: Bake and Save ---
+    if (!BakeAnimationSequence(LevelSequence, MovieScene, SkeletalMeshBindingId, Label))
+    {
+        UE_LOG(LogBlendingAuto, Warning, TEXT("Failed to bake animation sequence."));
+        return false;
+    }
 
-    // FString BakedAssetPath = FString::Printf(TEXT("/Game/Animations/BlendingAutomation/%s_Baked.%s_Baked"), *Label, *Label);
-    // OutNewAnimation = LoadObject<UAnimSequence>(nullptr, *BakedAssetPath);
+    FString BakedAssetPath = FString::Printf(TEXT("/Game/Animations/BlendingAutomation/%s_Baked.%s_Baked"), *Label, *Label);
+    OutNewAnimation = LoadObject<UAnimSequence>(nullptr, *BakedAssetPath);
     
     USequencerAbstractionBPLibrary::SaveAsset(LevelSequence);
     return (OutNewAnimation != nullptr);
@@ -90,19 +90,19 @@ bool UBlendingAutomationBFL::BlendAnimationSectionsAndMatchToBone(
     UMovieScene* MovieScene,
     FFrameRate DisplayRate,
     TMap<int32, FSectionLabelEntry>& MarkerSectionMap,
-    int32 SectionIndex,
+    int32 SubIndex,
     USkeletalMesh* TargetSkeletalMesh
 )
-{
+{ 
     // move the segments to blend together 
-    bool bBlendSuccess = BlendAnimationSections(LevelSequence, MovieScene, DisplayRate, MarkerSectionMap, SectionIndex);
+    bool bBlendSuccess = BlendAnimationSections(LevelSequence, MovieScene, DisplayRate, MarkerSectionMap, 1);
     if (!bBlendSuccess)
     {
         UE_LOG(LogBlendingAuto, Warning, TEXT("Failed to blend animation sections."));
         return false;
     }
 
-    bool bBoneMatchSuccess = MatchSectionsToBone(LevelSequence, MovieScene, DisplayRate, MarkerSectionMap, SectionIndex, TargetSkeletalMesh);
+    bool bBoneMatchSuccess = MatchSectionsToBone(LevelSequence, MovieScene, DisplayRate, MarkerSectionMap, 1, TargetSkeletalMesh);
     if (!bBoneMatchSuccess)
     {
         UE_LOG(LogBlendingAuto, Warning, TEXT("Failed to match sections to bone."));
@@ -122,8 +122,6 @@ bool UBlendingAutomationBFL::BlendAnimationSectionsAndMatchToBone(
 
     int32 StartDisplayFrame = StartDisplayTime.FloorToFrame().Value;
     int32 EndDisplayFrame = EndDisplayTime.FloorToFrame().Value;
-
-    // UE_LOG(LogBlendingAuto, Display, TEXT("Setting playback range: Start Frame = %d, End Frame = %d"), StartDisplayFrame, EndDisplayFrame);
 
     bool bSetPlaybackRangeSuccess = USequencerAbstractionBPLibrary::SetSequencePlaybackRange(LevelSequence, StartDisplayFrame, EndDisplayFrame);
     if (!bSetPlaybackRangeSuccess)
@@ -412,7 +410,11 @@ bool UBlendingAutomationBFL::MatchSectionsToBone(
             continue;
         }
 
-        USectionAbstraction::MatchSectionByBone(CurrentSection, TargetComponent, CurrentStartTime, DisplayRate, "pelvis");
+        // Move the sequencer playhead to the start time of the current section
+        FFrameTime DisplayTime = FFrameRate::TransformTime(CurrentStartTime, MovieScene->GetTickResolution(), DisplayRate);
+        USequencerAbstractionBPLibrary::moveSequencerPlayheadToFrame(DisplayTime.FloorToFrame().Value);
+
+        USectionAbstraction::MatchSectionByBone(CurrentSection, TargetComponent, CurrentStartTime, MovieScene->GetTickResolution(), "pelvis");
     }
     return true;
 }
@@ -567,113 +569,66 @@ bool UBlendingAutomationBFL::BlendAnimationSections(
     TMap<int32, FSectionLabelEntry>& MarkerSectionMap,
     int32 SectionIndex)
 {   
-    int32 OverlapPercentage = 15; // percentage of overlap between sections
+    int32 OverlapPercentage = 20; // percentage of overlap between sections
 
-    if (SectionIndex > 0) {
-        
-        FSectionLabelEntry* HeadEntry = MarkerSectionMap.Find(SectionIndex - 1);
-        FSectionLabelEntry* NewEntry = MarkerSectionMap.Find(SectionIndex);
+    FSectionLabelEntry* HeadEntry = MarkerSectionMap.Find(SectionIndex - 1);
+    FSectionLabelEntry* NewEntry = MarkerSectionMap.Find(SectionIndex);
+    FSectionLabelEntry* TailEntry = MarkerSectionMap.Find(SectionIndex + 1);
+    UMovieSceneSection* HeadSection = HeadEntry->Section;
+    UMovieSceneSection* NewSection = NewEntry->Section;
+    UMovieSceneSection* TailSection = TailEntry->Section;
 
-        if (!HeadEntry || !NewEntry)
-        {
-            UE_LOG(LogBlendingAuto, Warning, TEXT("Could not find entries for SectionIndex %d or %d in MarkerSectionMap."), SectionIndex - 1, SectionIndex);
-            return false;
-        }
+    if (!HeadEntry || !NewEntry || !TailEntry)
+    {
+        UE_LOG(LogBlendingAuto, Warning, TEXT("Could not find entries for SectionIndex %d, %d, or %d in MarkerSectionMap."), SectionIndex - 1, SectionIndex, SectionIndex + 1);
+        return false;
+    }
+    
+    FFrameTime NewSectionLength = NewSection->GetRange().Size<FFrameNumber>();
+    FFrameTime HeadEndTime = HeadSection->GetRange().GetUpperBoundValue();
+    int32 OverlapFrames = FMath::RoundToInt(NewSectionLength.FloorToFrame().Value * (OverlapPercentage / 100.0f));
 
-        UMovieSceneSection* HeadSection = HeadEntry->Section;
-        UMovieSceneSection* NewSection = NewEntry->Section;
+    UE_LOG(LogBlendingAuto, Display, TEXT("HeadEndTime: %d, NewSectionLength: %d, OverlapFrames: %d"), HeadEndTime.FloorToFrame().Value, NewSectionLength.FloorToFrame().Value, OverlapFrames);
 
-        if (!HeadSection || !NewSection)
-        {
-            UE_LOG(LogBlendingAuto, Warning, TEXT("Could not find sections for SectionIndex %d or %d."), SectionIndex - 1, SectionIndex);
-            return false;
-        }
+    // Calculate the new start frame for the new section
+    int32 NewStartFrame = HeadEndTime.FloorToFrame().Value - OverlapFrames;
 
-        FFrameTime HeadEndTime = HeadSection->GetRange().GetUpperBoundValue();
-        
-        // length of the new section in frames
-        FFrameTime NewSectionLength = NewSection->GetRange().Size<FFrameNumber>();
-        int32 OverlapFramesHead = FMath::RoundToInt(NewSectionLength.FloorToFrame().Value * (OverlapPercentage / 100.0f));
+    // Convert to the display rate
+    FFrameTime NewStartDisplayTime = FFrameRate::TransformTime(FFrameTime(NewStartFrame), MovieScene->GetTickResolution(), DisplayRate);
+    int32 NewStartDisplayFrame = NewStartDisplayTime.FloorToFrame().Value;
 
-        // Calculate the new start frame for the new section
-        int32 NewStartFrame = HeadEndTime.FloorToFrame().Value - OverlapFramesHead;
-        
-        // Convert to the display rate
-        FFrameTime NewStartDisplayTime = FFrameRate::TransformTime(FFrameTime(NewStartFrame), MovieScene->GetTickResolution(), DisplayRate);
-        int32 NewStartDisplayFrame = NewStartDisplayTime.FloorToFrame().Value;
-
-        FSequenceOpenResult Result;
-        // Move the new section to the new start frame (passing int32 frame)
-        bool bMoveSuccess = USequencerAbstractionBPLibrary::MoveAnimationSectionStartTo(LevelSequence, NewSection, NewStartDisplayFrame, Result);
-        if (!bMoveSuccess)
-        {
-            UE_LOG(LogBlendingAuto, Warning, TEXT("Failed to move new section to start frame %d: %s"), NewStartDisplayFrame, *Result.Error);
-            return false;
-        }
+    // Move the new section to the new start frame (passing int32 frame)
+    FSequenceOpenResult Result;
+    bool bMoveSuccessNew = USequencerAbstractionBPLibrary::MoveAnimationSectionStartTo(LevelSequence, NewSection, NewStartDisplayFrame, Result);
+    if (!bMoveSuccessNew)
+    {
+        UE_LOG(LogBlendingAuto, Warning, TEXT("Failed to move new section to start frame %d: %s"), NewStartDisplayFrame, *Result.Error);
+        return false;
     }
 
-    // Only move the tail section if it exists, i.e., if SectionIndex is not the last index in the MarkerSectionMap
-    if (SectionIndex < MarkerSectionMap.Num() - 1) {
-        FSectionLabelEntry* NewEntry = MarkerSectionMap.Find(SectionIndex);
-        FSectionLabelEntry* TailEntry = MarkerSectionMap.Find(SectionIndex + 1);
+    FFrameTime TailStartTime = TailSection->GetRange().GetLowerBoundValue();
+    FFrameTime NewSectionEndTime = NewSection->GetRange().GetUpperBoundValue();
+    FFrameTime LengthBetweenSections = TailStartTime - NewSectionEndTime;
 
-        if (!NewEntry || !TailEntry)
-        {
-            UE_LOG(LogBlendingAuto, Warning, TEXT("Could not find entries for SectionIndex %d or %d in MarkerSectionMap."), SectionIndex, SectionIndex + 1);
-            return false;
-        }
+    FFrameTime NewStartFrameTail = TailStartTime - FFrameTime(OverlapFrames) - LengthBetweenSections;
 
-        UMovieSceneSection* NewSection = NewEntry->Section;
-        UMovieSceneSection* TailSection = TailEntry->Section;
+    // Convert to the display rate
+    FFrameTime NewStartDisplayTimeTail = FFrameRate::TransformTime(FFrameTime(NewStartFrameTail), MovieScene->GetTickResolution(), DisplayRate);
+    int32 NewStartDisplayFrameTail = NewStartDisplayTimeTail.FloorToFrame().Value;
 
-        if (!NewSection || !TailSection)
-        {
-            UE_LOG(LogBlendingAuto, Warning, TEXT("Could not find sections for SectionIndex %d or %d."), SectionIndex, SectionIndex + 1);
-            return false;
-        }
-
-        FFrameTime NewStartTime = NewSection->GetRange().GetLowerBoundValue();
-        FFrameTime NewEndTime = NewSection->GetRange().GetUpperBoundValue();
-        FFrameTime TailStartTime = TailSection->GetRange().GetLowerBoundValue();
-        int32 LengthBetweenSections = TailStartTime.FloorToFrame().Value - NewEndTime.FloorToFrame().Value;
-
-        FFrameTime NewSectionLength = NewSection->GetRange().Size<FFrameNumber>();
-        int32 OverlapFramesTail = FMath::RoundToInt(NewSectionLength.FloorToFrame().Value * (OverlapPercentage / 100.0f));
-
-
-        // for each section from sectionindex + 1 to the end of the MarkerSectionMap, move the section to the left by OverlapFramesTail
-        for (int32 i = SectionIndex + 1; i < MarkerSectionMap.Num(); i++)
-        {
-            FSectionLabelEntry* CurrentEntry = MarkerSectionMap.Find(i);
-            if (!CurrentEntry)
-            {
-                UE_LOG(LogBlendingAuto, Warning, TEXT("Could not find entry for SectionIndex %d in MarkerSectionMap."), i);
-                continue;
-            }
-
-            UMovieSceneSection* CurrentSection = CurrentEntry->Section;
-            if (!CurrentSection)
-            {
-                UE_LOG(LogBlendingAuto, Warning, TEXT("Could not find section for SubIndex %d."), i);
-                continue;
-            }
-
-            FFrameTime CurrentStartTime = CurrentSection->GetRange().GetLowerBoundValue();
-            int32 NewStartFrameForCurrent = CurrentStartTime.FloorToFrame().Value - OverlapFramesTail - LengthBetweenSections;
-
-            // Convert to the display rate
-            FFrameTime NewStartDisplayTimeForCurrent = FFrameRate::TransformTime(FFrameTime(NewStartFrameForCurrent), MovieScene->GetTickResolution(), DisplayRate);
-            int32 NewStartDisplayFrameForCurrent = NewStartDisplayTimeForCurrent.FloorToFrame().Value;
-
-            FSequenceOpenResult MoveResult;
-            bool bMoveSuccess = USequencerAbstractionBPLibrary::MoveAnimationSectionStartTo(LevelSequence, CurrentSection, NewStartDisplayFrameForCurrent, MoveResult);
-            if (!bMoveSuccess)
-            {
-                UE_LOG(LogBlendingAuto, Warning, TEXT("Failed to move section %s to start frame %d: %s"), *CurrentSection->GetName(), NewStartDisplayFrameForCurrent, *MoveResult.Error);
-                return false;
-            }
-        }
+    // Move the tail section to the new start frame
+    FSequenceOpenResult MoveResult;
+    bool bMoveSuccessTail = USequencerAbstractionBPLibrary::MoveAnimationSectionStartTo(LevelSequence, TailSection, NewStartDisplayFrameTail, MoveResult);
+    if (!bMoveSuccessTail)
+    {
+        UE_LOG(LogBlendingAuto, Warning, TEXT("Failed to move section %s to start frame %d: %s"), *TailSection->GetName(), NewStartDisplayFrameTail, *MoveResult.Error);
+        return false;
     }
+
+    // Mark the sequence as changed so the modification can be saved
+    MovieScene->MarkAsChanged();
+    LevelSequence->MarkPackageDirty();
+
     UE_LOG(LogBlendingAuto, Display, TEXT("Successfully blended animation sections."));
     return true;
 }
