@@ -35,6 +35,17 @@ public:
         int32 SubIndex,
         UAnimSequence*& OutNewAnimation);
 
+    /**
+     * Exports all marked frames in the Level Sequence to an SRT subtitle file.
+     *
+     * @param LevelSequence The Level Sequence object containing the markers.
+     * @param OutputSrtFilePath The full target output path for the SRT file.
+     * @return True if the SRT file was exported successfully.
+     */
+    UFUNCTION(BlueprintCallable, Category = "BlendingAutomation|Export")
+    static bool ExportMarkersToSrt(ULevelSequence* LevelSequence, 
+        const FString& OutputSrtFilePath);
+
 private:
     
     static bool LoadAndValidate(
