@@ -15,6 +15,12 @@
 #include "MocapImportSubsystem.h"
 #include "SkeletalSequenceDataAsset.h"
 
+#include "Subsystems/BlendingAutomationBlender.h"
+#include "Subsystems/BlendingAutomationExporter.h"
+#include "Subsystems/BlendingAutomationSplitter.h"
+
+
+
 DEFINE_LOG_CATEGORY(LogBlendingAuto);
 
 bool UBlendingAutomationBFL::ProcessAnimationSubstitution(
