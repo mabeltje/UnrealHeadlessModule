@@ -30,6 +30,8 @@ bool UBlendingAutomationBFL::ProcessAnimationSubstitution(
     UE_LOG(LogBlendingAuto, Display, TEXT("[Substitution Start] SubIndex: %d | Label: '%s'"), SubIndex, *Label);
     UE_LOG(LogBlendingAuto, Display, TEXT("   Original: %s"), *OriginalAnimationPath);
     UE_LOG(LogBlendingAuto, Display, TEXT("   Donor:    %s"), *DonorAnimationPath);
+
+    // TODO: have a folder that is wiped after every substitution, with for example the baked control rig data or the imported trimmed fbx
     
     // --- Stage 1: Load and Validate ---
     OutNewAnimation = nullptr;
@@ -338,16 +340,17 @@ bool UBlendingAutomationBFL::PlaceMarkersAndSplit(
     
     // Load animation into level sequence
     FSequenceOpenResult ResultError;
-    UMovieSceneSkeletalAnimationSection* NewSection = USequencerAbstractionBPLibrary::AddAnimSectionToBinding(LevelSequence, SkeletalMeshBindingId, originalAnimSequence, 0, 0, false, ResultError);
+    UMovieSceneSkeletalAnimationSection* AnimSection = USequencerAbstractionBPLibrary::AddAnimSectionToBinding(LevelSequence, SkeletalMeshBindingId, originalAnimSequence, 0, 0, false, ResultError);
     
-    if (NewSection == nullptr)
+    if (AnimSection == nullptr)
     {
         UE_LOG(LogBlendingAuto, Error, TEXT("Failed to add original animation section to the level sequence."));
         return false;
     }
+
     // TODO: Also look if the transition before and after the subindex section needs to be removed
     // Cut the animation into segments based on the markers, but only split before and after the subindex
-    bool bSplitSuccess = SplitAnimationSection(NewSection, MovieScene, PlacedMarkers, OutMarkerSectionMap, SubIndex, Label);
+    bool bSplitSuccess = SplitAnimationSection(AnimSection, MovieScene, PlacedMarkers, OutMarkerSectionMap, SubIndex, Label);
     if (!bSplitSuccess)
     {
         UE_LOG(LogBlendingAuto, Warning, TEXT("Failed to split animation sections based on markers."));
@@ -674,6 +677,7 @@ bool UBlendingAutomationBFL::BlendAnimationSections(
     int32 SectionIndex)
 {   
     int32 OverlapPercentage = 20; // percentage of overlap between sections
+    FFrameRate TickResolution = MovieScene->GetTickResolution();
 
     FSectionLabelEntry* HeadEntry = MarkerSectionMap.Find(SectionIndex - 1);
     FSectionLabelEntry* NewEntry = MarkerSectionMap.Find(SectionIndex);
@@ -699,14 +703,33 @@ bool UBlendingAutomationBFL::BlendAnimationSections(
     FFrameTime NewStartDisplayTime = FFrameRate::TransformTime(FFrameTime(NewStartFrame), MovieScene->GetTickResolution(), DisplayRate);
     int32 NewStartDisplayFrame = NewStartDisplayTime.FloorToFrame().Value;
 
+    // // Move the new section to the new start frame (passing int32 frame)
+    // FSequenceOpenResult Result;
+    // bool bMoveSuccessNew = USequencerAbstractionBPLibrary::MoveAnimationSectionStartTo(LevelSequence, NewSection, NewStartDisplayFrame, Result);
+    // if (!bMoveSuccessNew)
+    // {
+    //     UE_LOG(LogBlendingAuto, Warning, TEXT("Failed to move new section to start frame %d: %s"), NewStartDisplayFrame, *Result.Error);
+    //     return false;
+    // }
+
+    // Calculate frametime HeadEndTime + 10
+    // 1. Define the offset in display frames
+    int32 DisplayFrameOffset = 10;
+
+    // 2. Transform HeadEndTime to Display Rate, then add 10 display frames
+    FFrameTime HeadEndDisplayTime = FFrameRate::TransformTime(HeadEndTime, TickResolution, DisplayRate);
+    int32 NewStartFrameOffset = HeadEndDisplayTime.FloorToFrame().Value + DisplayFrameOffset;
+
     // Move the new section to the new start frame (passing int32 frame)
     FSequenceOpenResult Result;
-    bool bMoveSuccessNew = USequencerAbstractionBPLibrary::MoveAnimationSectionStartTo(LevelSequence, NewSection, NewStartDisplayFrame, Result);
+    bool bMoveSuccessNew = USequencerAbstractionBPLibrary::MoveAnimationSectionStartTo(LevelSequence, NewSection, NewStartFrameOffset, Result);
     if (!bMoveSuccessNew)
     {
         UE_LOG(LogBlendingAuto, Warning, TEXT("Failed to move new section to start frame %d: %s"), NewStartDisplayFrame, *Result.Error);
         return false;
     }
+
+    UE_LOG(LogBlendingAuto, Display, TEXT("New start Frame for new section %d"), NewStartFrameOffset);
 
     FFrameTime TailStartTime = TailSection->GetRange().GetLowerBoundValue();
     FFrameTime NewSectionEndTime = NewSection->GetRange().GetUpperBoundValue();
@@ -717,9 +740,25 @@ bool UBlendingAutomationBFL::BlendAnimationSections(
     FFrameTime NewStartDisplayTimeTail = FFrameRate::TransformTime(FFrameTime(NewStartFrameTail), MovieScene->GetTickResolution(), DisplayRate);
     int32 NewStartDisplayFrameTail = NewStartDisplayTimeTail.FloorToFrame().Value;
 
+    // // Move the tail section to the new start frame
+    // FSequenceOpenResult MoveResult;
+    // bool bMoveSuccessTail = USequencerAbstractionBPLibrary::MoveAnimationSectionStartTo(LevelSequence, TailSection, NewStartDisplayFrameTail, MoveResult);
+    // if (!bMoveSuccessTail)
+    // {
+    //     UE_LOG(LogBlendingAuto, Warning, TEXT("Failed to move section %s to start frame %d: %s"), *TailSection->GetName(), NewStartDisplayFrameTail, *MoveResult.Error);
+    //     return false;
+    // }
+
+    // Transform NewSectionEndTime to Display Rate before adding the offset
+    FFrameTime NewSectionEndDisplayTime = FFrameRate::TransformTime(NewSectionEndTime, TickResolution, DisplayRate);
+    int32 NewEndFrame = NewSectionEndDisplayTime.FloorToFrame().Value + DisplayFrameOffset;
+    
+
+    UE_LOG(LogBlendingAuto, Display, TEXT("New start Frame for tail section %d"), NewEndFrame);
+
     // Move the tail section to the new start frame
     FSequenceOpenResult MoveResult;
-    bool bMoveSuccessTail = USequencerAbstractionBPLibrary::MoveAnimationSectionStartTo(LevelSequence, TailSection, NewStartDisplayFrameTail, MoveResult);
+    bool bMoveSuccessTail = USequencerAbstractionBPLibrary::MoveAnimationSectionStartTo(LevelSequence, TailSection, NewEndFrame, MoveResult);
     if (!bMoveSuccessTail)
     {
         UE_LOG(LogBlendingAuto, Warning, TEXT("Failed to move section %s to start frame %d: %s"), *TailSection->GetName(), NewStartDisplayFrameTail, *MoveResult.Error);
@@ -771,7 +810,7 @@ bool UBlendingAutomationBFL::AddDonorAnimationSection(
     const FString& Label
     ) 
 {   
-    // get the start frame of the section in the subindex from the marker section map
+    // Get the start frame of the section in the subindex from the marker section map
     FSectionLabelEntry* FoundEntry = MarkerSectionMap.Find(SectionIndex);
     
     if (!FoundEntry)
@@ -780,10 +819,10 @@ bool UBlendingAutomationBFL::AddDonorAnimationSection(
         return false;
     }
 
-    // print the found entry for debugging
+    // Print the found entry for debugging
     FString SectionName = FoundEntry->Section ? FoundEntry->Section->GetName() : TEXT("nullptr"); 
     
-    // get the start frame of the old section
+    // Get the start frame of the old section
     FFrameRate TickResolution = MovieScene->GetTickResolution();
     int32 StartFrameOldSection = FoundEntry->Section->GetRange().GetLowerBoundValue().Value;
 
@@ -797,7 +836,7 @@ bool UBlendingAutomationBFL::AddDonorAnimationSection(
         return false;
     }
 
-    // log the details of the new section for debugging
+    // Log the details of the new section for debugging
     int32 NewSectionStartFrame = NewAnimSection->GetRange().GetLowerBoundValue().Value;
     int32 NewSectionEndFrame = NewAnimSection->GetRange().GetUpperBoundValue().Value;
     // UE_LOG(LogBlendingAuto, Display, TEXT("New animation section added: Start Frame = %d, End Frame = %d, Label = %s"), NewSectionStartFrame, NewSectionEndFrame, *Label);
@@ -806,7 +845,7 @@ bool UBlendingAutomationBFL::AddDonorAnimationSection(
     FoundEntry->Section = NewAnimSection;
     FoundEntry->Label = Label;
 
-    // 3. Mark sequence dirty so the modification can be saved
+    // Mark sequence dirty so the modification can be saved
     Track->MarkAsChanged();
     MovieScene->MarkAsChanged();
     LevelSequence->MarkPackageDirty();
@@ -1001,49 +1040,134 @@ bool UBlendingAutomationBFL::FindAllSections(UMovieScene* MovieScene, TArray<UMo
     return true;
 }
 
-bool UBlendingAutomationBFL::SplitAnimationSection(UMovieSceneSkeletalAnimationSection* Section, UMovieScene* MovieScene, const TArray<FMovieSceneMarkedFrame>& Markers, TMap<int32, FSectionLabelEntry>& MarkerSectionMap, int32 SubIndex,  const FString& Label) {
+bool UBlendingAutomationBFL::SplitAnimationSection(UMovieSceneSkeletalAnimationSection* Section, UMovieScene* MovieScene, const TArray<FMovieSceneMarkedFrame>& Markers, TMap<int32, FSectionLabelEntry>& MarkerSectionMap, int32 SubIndex,  const FString& Label) {\
+
+    // sort markers
+    MovieScene->SortMarkedFrames();
+    
+    // get markers again to make sure they are in chronological order
+    TArray<FMovieSceneMarkedFrame> SortedMarkers = MovieScene->GetMarkedFrames();
+
     // Find the 2 markers that correspond to the s: and e: labels for the given label 
     FMovieSceneMarkedFrame StartMarker;
     FMovieSceneMarkedFrame EndMarker;
     bool bFoundStart = false;
     bool bFoundEnd = false;
 
-    // This is a temp solution until I find a way to know which marker is the original gloss of the section we have to sub
     int32 GlossIndex = 0;
-
-    for (const FMovieSceneMarkedFrame& Marker : Markers)
+    int32 StartMarkerIndex = INDEX_NONE;
+    int32 EndMarkerIndex = INDEX_NONE;
+    
+    // find out which indices are the start and end markers in the sequence
+    for (int32 i = 0; i < SortedMarkers.Num(); ++i)
     {   
-        if (Marker.Label.StartsWith("s:"))
+        const FMovieSceneMarkedFrame& Marker = SortedMarkers[i];
+
+        if (Marker.Label.StartsWith(TEXT("s:")))
         {   
             if (GlossIndex == SubIndex)
             {
                 StartMarker = Marker;
+                StartMarkerIndex = i;
                 bFoundStart = true;
             }
         }
-        else if (Marker.Label.StartsWith("e:"))
+        else if (Marker.Label.StartsWith(TEXT("e:")))
         {   
             if (GlossIndex == SubIndex)
             {
                 EndMarker = Marker;
+                EndMarkerIndex = i;
                 bFoundEnd = true;
             }
-            GlossIndex++;
+            GlossIndex++; // Increment pair index on encountering an end marker
         }
     }
-
+    
     if (!bFoundStart || !bFoundEnd)
     {
         UE_LOG(LogBlendingAuto, Warning, TEXT("Could not find start or end markers for SubIndex: %d"), SubIndex);
         return false;
     }
 
+    // Now determine where to cut the section
+    FMovieSceneMarkedFrame CutStartMarker = StartMarker;
+    FMovieSceneMarkedFrame CutEndMarker = EndMarker;
+
+    const bool bIsFirstSubIndex = (SubIndex == 0);
+    // The last available pair of s:/e: markers is GlossIndex - 1 (due to post-increment)
+    const bool bIsLastSubIndex = (SubIndex == GlossIndex - 1);
+
+    // if subindex 0
+        // if end of index 0 and start of index 1 is same
+            // cut at start and end of index 0
+        // if end of index 0 is earlier than start of index 1 (there is a transition)
+            // cut at start of index 0 and start of index 1
+    
+    // if subindex is last
+        // if end of index - 1 is same as start of index
+            // cut at start and end of index
+        // if end of index - 1 is earlier than start of index
+            // cut at end of index - 1 and end of index
+
+    if (bIsFirstSubIndex)
+    {
+        // Find start marker of next index (SubIndex 1) by scanning forward
+        int32 NextStartIdx = INDEX_NONE;
+        for (int32 i = StartMarkerIndex + 1; i < SortedMarkers.Num(); ++i)
+        {
+            if (SortedMarkers[i].Label.StartsWith(TEXT("s:")))
+            {
+                NextStartIdx = i;
+                break;
+            }
+        }
+
+        if (NextStartIdx != INDEX_NONE)
+        {
+            const FMovieSceneMarkedFrame& NextStartMarker = SortedMarkers[NextStartIdx];
+            
+            // If end of index 0 is earlier than start of index 1 (there is a transition gap)
+            if (EndMarker.FrameNumber < NextStartMarker.FrameNumber)
+            {
+                // Cut at start of index 0 and start of index 1
+                CutEndMarker = NextStartMarker;
+            }
+        }
+    }
+    else if (bIsLastSubIndex)
+    {
+        // Find end marker of previous index (SubIndex - 1)
+        int32 PrevEndIdx = INDEX_NONE;
+        for (int32 i = StartMarkerIndex - 1; i >= 0; --i)
+        {
+            if (SortedMarkers[i].Label.StartsWith(TEXT("e:")))
+            {
+                PrevEndIdx = i;
+                break;
+            }
+        }
+
+        if (PrevEndIdx != INDEX_NONE)
+        {
+            const FMovieSceneMarkedFrame& PrevEndMarker = SortedMarkers[PrevEndIdx];
+
+            // If end of index - 1 is earlier than start of current index
+            if (PrevEndMarker.FrameNumber < StartMarker.FrameNumber)
+            {
+                // Cut at end of index - 1 and end of current index
+                CutStartMarker = PrevEndMarker;
+            }
+        }
+    }
+
     TArray<FMovieSceneMarkedFrame> RelevantMarkers;
-    RelevantMarkers.Add(StartMarker);
-    RelevantMarkers.Add(EndMarker);
+    RelevantMarkers.Add(CutStartMarker);
+    RelevantMarkers.Add(CutEndMarker);
 
     return SplitAnimationSections(Section, MovieScene, RelevantMarkers, MarkerSectionMap);
 }
+
 
 bool UBlendingAutomationBFL::SplitAnimationSections(UMovieSceneSkeletalAnimationSection* Section, UMovieScene* MovieScene, const TArray<FMovieSceneMarkedFrame>& Markers, TMap<int32, FSectionLabelEntry>& MarkerSectionMap) {
     UMovieSceneSkeletalAnimationSection* RightSplitSection = Section;
