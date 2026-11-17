@@ -1,4 +1,16 @@
-#include "BlendingAutomationBFL.h"
+/**
+ * BlendingAutomationBFL.cpp
+ *
+ * The main file for the blending automation pipeline.
+ * It consists of the main logic for processing animation substitutions.
+ * There are 5 stages in the pipeline:
+ * 1. Load and Validate: Load the original and donor animations, validate the data, and prepare the data structures.
+ * 2. Place Markers and Split Sections: Parse the markers from the original animation's srt file, place them in the level sequence, and split the animation sections accordingly.
+ * 3. Remove Section and Add Donor Animation: Remove the original animation section and add the donor animation section to the level sequence.
+ * 4. Blend Sections and Match to Bone: Generate yhe new transitions and match the pelvis to avoid shifts between sections.
+ * 5. Bake and Save: Bake the final blended animation sequence to a new asset and save it.
+ */
+
 #include "MovieScene.h"
 #include "MovieSceneSection.h"
 #include "Tracks/MovieSceneSkeletalAnimationTrack.h"
@@ -6,19 +18,19 @@
 #include "Animation/Skeleton.h"
 #include "Animation/AnimSequence.h"
 #include "Editor.h"
+#include "SkeletalSequenceDataAsset.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 
 #include "VTTParser.h"
+#include "BlendingAutomationBFL.h"
 #include "SequencerAbstractionBPLibrary.h"
 #include "AnimationExport.h"
 #include "MocapImportSubsystem.h"
-#include "SkeletalSequenceDataAsset.h"
 
 #include "Subsystems/BlendingAutomationBlender.h"
 #include "Subsystems/BlendingAutomationExporter.h"
 #include "Subsystems/BlendingAutomationSplitter.h"
-
 
 
 DEFINE_LOG_CATEGORY(LogBlendingAuto);
@@ -53,6 +65,8 @@ bool UBlendingAutomationBFL::ProcessAnimationSubstitution(
     FGuid SkeletalMeshBindingId;
     TMap<int32, FSectionLabelEntry> MarkerSectionMap;
 
+    
+
     if (!LoadAndValidate(
             LevelSequence, OriginalAnimationPath, OriginalAnimationSrtPath, DonorAnimationPath, Label, SubIndex,
             TargetSkeleton, TargetSkeletalMesh, MovieScene, DisplayRate, TickResolution,
@@ -63,7 +77,7 @@ bool UBlendingAutomationBFL::ProcessAnimationSubstitution(
     UE_LOG(LogBlendingAuto, Display, TEXT("     [1/5] Loading & Validating assets..."));
 
     // --- Stage 2: Place Markers and Split Sections ---
-    if (!PlaceMarkersAndSplit(LevelSequence, MovieScene, DisplayRate, OriginalAnimationSrtPath, OriginalAnim, SkeletalMeshBindingId, SubIndex, Label, MarkerSectionMap))
+    if (!FBlendingAutomationSplitter::PlaceMarkersAndSplit(LevelSequence, MovieScene, DisplayRate, OriginalAnimationSrtPath, OriginalAnim, SkeletalMeshBindingId, SubIndex, Label, MarkerSectionMap))
     {
         return false;
     }
@@ -77,14 +91,14 @@ bool UBlendingAutomationBFL::ProcessAnimationSubstitution(
     UE_LOG(LogBlendingAuto, Display, TEXT("     [3/5] Replacing section with donor animation..."));
 
     // --- Stage 4: Blend Sections and Match to Bone ---
-    if (!BlendAnimationSectionsAndMatchToBone(LevelSequence, MovieScene, DisplayRate, MarkerSectionMap, SubIndex, TargetSkeletalMesh))
+    if (!FBlendingAutomationBlender::BlendAnimationSectionsAndMatchToBone(LevelSequence, MovieScene, DisplayRate, MarkerSectionMap, SubIndex, TargetSkeletalMesh))
     {
         return false;
     }
     UE_LOG(LogBlendingAuto, Display, TEXT("     [4/5] Blending overlaps & matching pelvis bone transforms..."));
 
     // --- Stage 5: Bake and Save ---
-    if (!BakeAnimationSequence(LevelSequence, MovieScene, SkeletalMeshBindingId, Label))
+    if (!FBlendingAutomationExporter::BakeAnimationSequence(LevelSequence, MovieScene, SkeletalMeshBindingId, Label))
     {
         UE_LOG(LogBlendingAuto, Warning, TEXT("Failed to bake animation sequence."));
         return false;
@@ -127,161 +141,123 @@ bool UBlendingAutomationBFL::ProcessAnimationSubstitution(
     return (OutNewAnimation != nullptr);
 }
 
-// Helper: Converts FFrameTime to standard SRT timestamp format (HH:MM:SS,mmm)
-static FString FrameTimeToSrtTimestamp(FFrameTime FrameTime, FFrameRate FrameRate)
-{
-    double TotalSeconds = FrameRate.AsSeconds(FrameTime);
-    if (TotalSeconds < 0.0)
-    {
-        TotalSeconds = 0.0;
-    }
-
-    int32 Hours = FMath::FloorToInt(TotalSeconds / 3600.0);
-    int32 Minutes = FMath::FloorToInt(FMath::Fmod(TotalSeconds, 3600.0) / 60.0);
-    int32 Seconds = FMath::FloorToInt(FMath::Fmod(TotalSeconds, 60.0));
-    int32 Milliseconds = FMath::FloorToInt(FMath::Fmod(TotalSeconds, 1.0) * 1000.0);
-
-    return FString::Printf(TEXT("%02d:%02d:%02d,%03d"), Hours, Minutes, Seconds, Milliseconds);
-}
-
-bool UBlendingAutomationBFL::ExportMarkersToSrt(ULevelSequence* LevelSequence, const FString& OutputSrtFilePath)
-{
-    if (!LevelSequence)
-    {
-        UE_LOG(LogBlendingAuto, Error, TEXT("ExportMarkersToSrt: LevelSequence is null."));
-        return false;
-    }
-
-    UMovieScene* MovieScene = LevelSequence->GetMovieScene();
-    if (!MovieScene)
-    {
-        UE_LOG(LogBlendingAuto, Error, TEXT("ExportMarkersToSrt: MovieScene is null."));
-        return false;
-    }
-
-    const TArray<FMovieSceneMarkedFrame>& MarkedFrames = MovieScene->GetMarkedFrames();
-    if (MarkedFrames.Num() == 0)
-    {
-        UE_LOG(LogBlendingAuto, Warning, TEXT("ExportMarkersToSrt: No marked frames found in Level Sequence."));
-        return false;
-    }
-
-    FFrameRate TickResolution = MovieScene->GetTickResolution();
-    FString SrtContent = TEXT("");
-    int32 SrtIndex = 1;
-
-    // Pair s: (start) and e: (end) markers together
-    for (int32 i = 0; i < MarkedFrames.Num(); ++i)
-    {
-        const FMovieSceneMarkedFrame& StartMarker = MarkedFrames[i];
-        
-        // Process only Start markers (e.g., "s:GLOSS_LABEL")
-        if (StartMarker.Label.StartsWith(TEXT("s:")))
-        {
-            FString GlossLabel = StartMarker.Label.RightChop(2); // Strip "s:" prefix
-            FFrameTime StartFrameTime = FFrameTime(StartMarker.FrameNumber);
-            FFrameTime EndFrameTime = StartFrameTime;
-            bool bFoundMatchingEnd = false;
-
-            // Search for the matching End marker ("e:GLOSS_LABEL")
-            for (int32 j = i + 1; j < MarkedFrames.Num(); ++j)
-            {
-                const FMovieSceneMarkedFrame& EndMarker = MarkedFrames[j];
-                if (EndMarker.Label.StartsWith(TEXT("e:")) && EndMarker.Label.RightChop(2) == GlossLabel)
-                {
-                    EndFrameTime = FFrameTime(EndMarker.FrameNumber);
-                    bFoundMatchingEnd = true;
-                    break;
-                }
-            }
-
-            // Fallback: If no matching e: marker is found, use the next available marker as the end time
-            if (!bFoundMatchingEnd && (i + 1 < MarkedFrames.Num()))
-            {
-                EndFrameTime = FFrameTime(MarkedFrames[i + 1].FrameNumber);
-            }
-
-            FString StartTimeStr = FrameTimeToSrtTimestamp(StartFrameTime, TickResolution);
-            FString EndTimeStr = FrameTimeToSrtTimestamp(EndFrameTime, TickResolution);
-
-            // Format standard SRT block:
-            // 1
-            // 00:00:01,000 --> 00:00:02,500
-            // GLOSS_LABEL
-            //
-            SrtContent += FString::Printf(TEXT("%d\n%s --> %s\n%s\n\n"), SrtIndex, *StartTimeStr, *EndTimeStr, *GlossLabel);
-            SrtIndex++;
-        }
-    }
-
-    if (SrtContent.IsEmpty())
-    {
-        UE_LOG(LogBlendingAuto, Warning, TEXT("ExportMarkersToSrt: No valid start/end marker pairs found to export."));
-        return false;
-    }
-
-    // Ensure target directory exists and save the file
-    FString CleanPath = FPaths::ConvertRelativePathToFull(OutputSrtFilePath);
-    FPaths::MakePlatformFilename(CleanPath);
-
-    bool bSaved = FFileHelper::SaveStringToFile(SrtContent, *CleanPath, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM);
-    if (bSaved)
-    {
-        UE_LOG(LogBlendingAuto, Display, TEXT("Successfully exported SRT file to: %s"), *CleanPath);
-    }
-    else
-    {
-        UE_LOG(LogBlendingAuto, Error, TEXT("Failed to save SRT file to: %s"), *CleanPath);
-    }
-
-    return bSaved;
-}
-
-bool UBlendingAutomationBFL::BlendAnimationSectionsAndMatchToBone(
+// Stage 1: Load and Validate
+bool UBlendingAutomationBFL::LoadAndValidate(
     ULevelSequence* LevelSequence,
-    UMovieScene* MovieScene,
-    FFrameRate DisplayRate,
-    TMap<int32, FSectionLabelEntry>& MarkerSectionMap,
+    const FString& OriginalAnimationPath,
+    const FString& OriginalAnimationSrtPath,
+    const FString& DonorAnimationPath,
+    const FString& Label,
     int32 SubIndex,
-    USkeletalMesh* TargetSkeletalMesh
+    FSubstitutionContext*& OutSubstitutionContext,
+    FSubstitutionRequest*& OutSubstitutionRequest,
+    USkeleton*& OutSkeleton,
+    USkeletalMesh*& OutMesh,
+    UMovieScene*& OutMovieScene,
+    FFrameRate& OutDisplayRate,
+    FFrameRate& OutTickResolution,
+    UAnimSequence*& OutOriginalAnim,
+    UAnimSequence*& OutDonorAnim,
+    UMocapImportSubsystem*& OutMocapSubsystem,
+    UMovieSceneSkeletalAnimationTrack*& OutTrack,
+    FGuid& OutSkeletalMeshBindingId
 )
-{ 
-    // Move the sections to blend together 
-    bool bBlendSuccess = BlendAnimationSections(LevelSequence, MovieScene, DisplayRate, MarkerSectionMap, 1);
-    if (!bBlendSuccess)
-    {
-        UE_LOG(LogBlendingAuto, Warning, TEXT("Failed to blend animation sections."));
+{  
+    // Create the substitution context and request structures
+    FSubstitutionContext SubstitutionContext;
+    FSubstitutionRequest SubstitutionRequest;
+
+    // Populate the substitution request with the input parameters
+    SubstitutionRequest.LevelSequence = LevelSequence;
+    SubstitutionRequest.OriginalAnimationPath = OriginalAnimationPath;
+    SubstitutionRequest.OriginalAnimationSrtPath = OriginalAnimationSrtPath;
+    SubstitutionRequest.DonorAnimationPath = DonorAnimationPath;
+    SubstitutionRequest.Label = Label;
+    SubstitutionRequest.SubIndex = SubIndex;
+
+    // Validate Input Parameters
+    if (!ValidateInputParameters(SubstitutionRequest))
+    {   
+        UE_LOG(LogBlendingAuto, Error, TEXT("Input parameter validation failed."));
         return false;
     }
 
-    // Lock hips to avoid shifts between section
-    bool bBoneMatchSuccess = MatchSectionsToBone(LevelSequence, MovieScene, DisplayRate, MarkerSectionMap, 1, TargetSkeletalMesh);
-    if (!bBoneMatchSuccess)
+    // Load config
+    USkeletalSequenceDataAsset* SkeletalSequenceDataAsset = LoadObject<USkeletalSequenceDataAsset>(nullptr, TEXT("/Game/Config/AutomationConfig.AutomationConfig"));
+    if (!SkeletalSequenceDataAsset)
     {
-        UE_LOG(LogBlendingAuto, Warning, TEXT("Failed to match sections to bone."));
+        UE_LOG(LogBlendingAuto, Error, TEXT("Failed to load SkeletalSequenceDataAsset."));
         return false;
     }
 
-    // Set the playback range for the level sequence correctly
-    int32 StartFrame = MarkerSectionMap[0].Section->GetRange().GetLowerBoundValue().Value;
-    int32 EndFrame = MarkerSectionMap[MarkerSectionMap.Num() - 1].Section->GetRange().GetUpperBoundValue().Value;
-
-    // Convert to display rate
-    FFrameTime StartDisplayTime = FFrameRate::TransformTime(FFrameTime(StartFrame), MovieScene->GetTickResolution(), DisplayRate);
-    FFrameTime EndDisplayTime = FFrameRate::TransformTime(FFrameTime(EndFrame), MovieScene->GetTickResolution(), DisplayRate);
-
-    int32 StartDisplayFrame = StartDisplayTime.FloorToFrame().Value;
-    int32 EndDisplayFrame = EndDisplayTime.FloorToFrame().Value;
-
-    bool bSetPlaybackRangeSuccess = USequencerAbstractionBPLibrary::SetSequencePlaybackRange(LevelSequence, StartDisplayFrame, EndDisplayFrame);
-    if (!bSetPlaybackRangeSuccess)
+    // Load the target skeleton from the SkeletalSequenceDataAsset
+    SubstitutionContext.TargetSkeleton = SkeletalSequenceDataAsset->Skeleton.LoadSynchronous();
+    SubstitutionContext.TargetSkeletalMesh = SkeletalSequenceDataAsset->SkeletalMesh.LoadSynchronous();
+    if (!SubstitutionContext.TargetSkeleton || !SubstitutionContext.TargetSkeletalMesh)
     {
-        UE_LOG(LogBlendingAuto, Warning, TEXT("Failed to set playback range for the level sequence."));
+        UE_LOG(LogBlendingAuto, Error, TEXT("Failed to load target skeleton or skeletal mesh from SkeletalSequenceDataAsset."));
+        return false;
+    }
+    
+    // Subsystem
+    SubstitutionContext.MocapSubsystem = GEditor->GetEditorSubsystem<UMocapImportSubsystem>();
+    if (!SubstitutionContext.MocapSubsystem)
+    {
+        UE_LOG(LogBlendingAuto, Error, TEXT("Could not obtain UMocapImportSubsystem!"));
+        return false;
+    }
+    
+    // Get the MovieScene and Rates
+    SubstitutionContext.MovieScene = LevelSequence->GetMovieScene();
+    if (!SubstitutionContext.MovieScene)
+    {
+        UE_LOG(LogBlendingAuto, Error, TEXT("LevelSequence does not have a valid MovieScene."));
+        return false;
+    }
+    SubstitutionContext.DisplayRate = SubstitutionContext.MovieScene->GetDisplayRate();
+    SubstitutionContext.TickResolution = SubstitutionContext.MovieScene->GetTickResolution();
+
+    if (!LoadAnimSequence(SubstitutionContext.MocapSubsystem, SubstitutionRequest.OriginalAnimationPath, SubstitutionContext.TargetSkeleton, SubstitutionContext.OriginalAnim))
+    {
+        UE_LOG(LogBlendingAuto, Error, TEXT("Failed to import original animation: %s"), *SubstitutionRequest.OriginalAnimationPath);
+        return false;
+    }
+
+    if (!LoadAnimSequence(SubstitutionContext.MocapSubsystem, SubstitutionRequest.DonorAnimationPath, SubstitutionContext.TargetSkeleton, SubstitutionContext.DonorAnim))
+    {
+        UE_LOG(LogBlendingAuto, Error, TEXT("Failed to import donor animation: %s"), *SubstitutionRequest.DonorAnimationPath);
+        return false;
+    }
+
+    // Get the binding guid for the skeletal mesh track
+    TArray<UMovieSceneSkeletalAnimationTrack*> OutTracks;
+    FindAllTracks(SubstitutionContext.MovieScene, OutTracks);
+    if (OutTracks.Num() > 0)
+    {
+        SubstitutionContext.MovieScene->FindTrackBinding(*OutTracks[0], SubstitutionContext.SkeletalMeshBindingId);
+    }
+
+    // Save the track
+    SubstitutionContext.Track = OutTracks[0];
+
+    if (!SubstitutionContext.SkeletalMeshBindingId.IsValid())
+    {
+        UE_LOG(LogBlendingAuto, Error, TEXT("Failed to find a valid binding for the skeletal animation track."));
+        return false;
+    }
+
+    // Reset the level sequence to remove all existing tracks and markers
+    bool bResetSuccess = ResetLevelSequence(LevelSequence, SubstitutionContext.MovieScene, FGuid());
+    if (!bResetSuccess)
+    {
+        UE_LOG(LogBlendingAuto, Warning, TEXT("Failed to reset the level sequence."));
+        return false;
     }
 
     return true;
 }
 
+// Stage 3: Remove Section and Add Donor Animation
 bool UBlendingAutomationBFL::ReplaceSection(
     ULevelSequence* LevelSequence,
     UMovieScene* MovieScene,
@@ -323,216 +299,6 @@ bool UBlendingAutomationBFL::ReplaceSection(
     return true;
 }
 
-bool UBlendingAutomationBFL::PlaceMarkersAndSplit(
-    ULevelSequence* LevelSequence,
-    UMovieScene* MovieScene,
-    FFrameRate DisplayRate,
-    const FString& OriginalAnimationSrtPath,
-    UAnimSequence* originalAnimSequence,
-    FGuid SkeletalMeshBindingId,
-    int32 SubIndex,
-    const FString& Label,
-    TMap<int32, FSectionLabelEntry>& OutMarkerSectionMap
-)
-{
-    // Place markers from the VTT file into the level sequence
-    TArray<FMovieSceneMarkedFrame> PlacedMarkers;
-    bool bMarkersPlaced = PlaceMarkersFromVTT(OriginalAnimationSrtPath, LevelSequence, MovieScene, DisplayRate, PlacedMarkers);
-    if (!bMarkersPlaced)
-    {
-        UE_LOG(LogBlendingAuto, Warning, TEXT("No markers were placed from the VTT file."));
-        return false;
-    }  
-    
-    // Load animation into level sequence
-    FSequenceOpenResult ResultError;
-    UMovieSceneSkeletalAnimationSection* AnimSection = USequencerAbstractionBPLibrary::AddAnimSectionToBinding(LevelSequence, SkeletalMeshBindingId, originalAnimSequence, 0, 0, false, ResultError);
-    
-    if (AnimSection == nullptr)
-    {
-        UE_LOG(LogBlendingAuto, Error, TEXT("Failed to add original animation section to the level sequence."));
-        return false;
-    }
-
-    // TODO: Also look if the transition before and after the subindex section needs to be removed
-    // Cut the animation into segments based on the markers, but only split before and after the subindex
-    bool bSplitSuccess = SplitAnimationSection(AnimSection, MovieScene, PlacedMarkers, OutMarkerSectionMap, SubIndex, Label);
-    if (!bSplitSuccess)
-    {
-        UE_LOG(LogBlendingAuto, Warning, TEXT("Failed to split animation sections based on markers."));
-        return false;
-    }
-
-    return true;
-}
-
-bool UBlendingAutomationBFL::LoadAndValidate(
-    ULevelSequence* LevelSequence,
-    const FString& OriginalAnimationPath,
-    const FString& OriginalAnimationSrtPath,
-    const FString& DonorAnimationPath,
-    const FString& Label,
-    int32 SubIndex,
-    USkeleton*& OutSkeleton,
-    USkeletalMesh*& OutMesh,
-    UMovieScene*& OutMovieScene,
-    FFrameRate& OutDisplayRate,
-    FFrameRate& OutTickResolution,
-    UAnimSequence*& OutOriginalAnim,
-    UAnimSequence*& OutDonorAnim,
-    UMocapImportSubsystem*& OutMocapSubsystem,
-    UMovieSceneSkeletalAnimationTrack*& OutTrack,
-    FGuid& OutSkeletalMeshBindingId
-)
-{   
-    // Validate Input Parameters
-    if (!ValidateInputParameters(LevelSequence, OriginalAnimationPath, OriginalAnimationSrtPath, DonorAnimationPath, Label, SubIndex))
-    {   
-        UE_LOG(LogBlendingAuto, Error, TEXT("Input parameter validation failed."));
-        return false;
-    }
-
-    // Load config
-    USkeletalSequenceDataAsset* SkeletalSequenceDataAsset = LoadObject<USkeletalSequenceDataAsset>(nullptr, TEXT("/Game/Config/AutomationConfig.AutomationConfig"));
-    if (!SkeletalSequenceDataAsset)
-    {
-        UE_LOG(LogBlendingAuto, Error, TEXT("Failed to load SkeletalSequenceDataAsset."));
-        return false;
-    }
-    
-    // Load the target skeleton from the SkeletalSequenceDataAsset
-    OutSkeleton = SkeletalSequenceDataAsset->Skeleton.LoadSynchronous();
-    if (!OutSkeleton)
-    {
-        UE_LOG(LogBlendingAuto, Error, TEXT("Target Skeleton is null. Please ensure the SkeletalSequenceDataAsset has a valid Skeleton reference."));
-        return false;
-    }
-
-    OutMesh = SkeletalSequenceDataAsset->SkeletalMesh.LoadSynchronous();
-    if (!OutMesh)
-    {
-        UE_LOG(LogBlendingAuto, Error, TEXT("Target Skeletal Mesh is null. Please ensure the SkeletalSequenceDataAsset has a valid SkeletalMesh reference."));
-        return false;
-    }
-    
-    // Subsystem
-    OutMocapSubsystem = GEditor->GetEditorSubsystem<UMocapImportSubsystem>();
-    if (!OutMocapSubsystem)
-    {
-        UE_LOG(LogBlendingAuto, Error, TEXT("Could not obtain UMocapImportSubsystem!"));
-        return false;
-    }
-    
-    // Get the MovieScene and Rates
-    OutMovieScene = LevelSequence->GetMovieScene();
-    if (!OutMovieScene)
-    {
-        UE_LOG(LogBlendingAuto, Error, TEXT("LevelSequence does not have a valid MovieScene."));
-        return false;
-    }
-    OutDisplayRate = OutMovieScene->GetDisplayRate();
-    OutTickResolution = OutMovieScene->GetTickResolution();
-
-    if (!LoadAnimSequence(OutMocapSubsystem, OriginalAnimationPath, OutSkeleton, OutOriginalAnim))
-    {
-        UE_LOG(LogBlendingAuto, Error, TEXT("Failed to import original animation: %s"), *OriginalAnimationPath);
-        return false;
-    }
-
-    if (!LoadAnimSequence(OutMocapSubsystem, DonorAnimationPath, OutSkeleton, OutDonorAnim))
-    {
-        UE_LOG(LogBlendingAuto, Error, TEXT("Failed to import donor animation: %s"), *DonorAnimationPath);
-        return false;
-    }
-
-    // Get the binding guid for the skeletal mesh track
-    TArray<UMovieSceneSkeletalAnimationTrack*> OutTracks;
-    FindAllTracks(OutMovieScene, OutTracks);
-    if (OutTracks.Num() > 0)
-    {
-        OutMovieScene->FindTrackBinding(*OutTracks[0], OutSkeletalMeshBindingId);
-    }
-
-    // Save the track
-    OutTrack = OutTracks[0];
-
-    if (!OutSkeletalMeshBindingId.IsValid())
-    {
-        UE_LOG(LogBlendingAuto, Error, TEXT("Failed to find a valid binding for the skeletal animation track."));
-        return false;
-    }
-
-    // Reset the level sequence to remove all existing tracks and markers
-    bool bResetSuccess = ResetLevelSequence(LevelSequence, OutMovieScene, FGuid());
-    if (!bResetSuccess)
-    {
-        UE_LOG(LogBlendingAuto, Warning, TEXT("Failed to reset the level sequence."));
-        return false;
-    }
-
-    return true;
-}
-
-bool UBlendingAutomationBFL::MatchSectionsToBone(
-        ULevelSequence* LevelSequence,
-        UMovieScene* MovieScene,
-        FFrameRate DisplayRate,
-        TMap<int32, FSectionLabelEntry>& MarkerSectionMap,
-        int32 SectionIndex,
-        USkeletalMesh* TargetSkeletalMesh
-    )
-{   
-    // Match the sections to the bone before subindex
-    for (int32 i = SectionIndex; i < MarkerSectionMap.Num(); i++)
-    {
-        FSectionLabelEntry* CurrentEntry = MarkerSectionMap.Find(i);
-        if (!CurrentEntry)
-        {
-            UE_LOG(LogBlendingAuto, Warning, TEXT("Could not find entry for SubIndex %d in MarkerSectionMap."), i);
-            continue;
-        }
-
-        UMovieSceneSkeletalAnimationSection* CurrentSection = Cast<UMovieSceneSkeletalAnimationSection>(CurrentEntry->Section);
-        if (!CurrentSection)
-        {
-            UE_LOG(LogBlendingAuto, Warning, TEXT("Could not find section for SubIndex %d."), i);
-            continue;
-        }
-
-        // Start frame of the current section
-        FFrameTime CurrentStartTime = CurrentSection->GetRange().GetLowerBoundValue();
-        USkeletalMeshComponent* TargetComponent = nullptr;
-
-        if (TargetSkeletalMesh && GEditor)
-        {
-            UWorld* EditorWorld = GEditor->GetEditorWorldContext().World();
-
-            for (TObjectIterator<USkeletalMeshComponent> It; It; ++It)
-            {
-                // Check if the component belongs to the current editor world and uses the mesh
-                if (It->GetWorld() == EditorWorld && It->GetSkeletalMeshAsset() == TargetSkeletalMesh)
-                {
-                    TargetComponent = *It;
-                    break;
-                }
-            }
-        }
-
-        if (!TargetComponent)
-        {
-            UE_LOG(LogBlendingAuto, Warning, TEXT("Could not find a SkeletalMeshComponent in the editor world that uses the target skeletal mesh."));
-            continue;
-        }
-
-        // Move the sequencer playhead to the start time of the current section
-        FFrameTime DisplayTime = FFrameRate::TransformTime(CurrentStartTime, MovieScene->GetTickResolution(), DisplayRate);
-        USequencerAbstractionBPLibrary::moveSequencerPlayheadToFrame(DisplayTime.FloorToFrame().Value);
-
-        USectionAbstraction::MatchSectionByBone(CurrentSection, TargetComponent, CurrentStartTime, MovieScene->GetTickResolution(), "pelvis");
-    }
-
-    return true;
-}
 
 bool UBlendingAutomationBFL::FitTailSections(ULevelSequence* LevelSequence,
         UMovieScene* MovieScene,
@@ -622,160 +388,6 @@ bool UBlendingAutomationBFL::FitTailSections(ULevelSequence* LevelSequence,
     return true;
 }
 
-bool UBlendingAutomationBFL::BakeAnimationSequence(
-    ULevelSequence* LevelSequence,
-    UMovieScene* MovieScene,
-    FGuid SkeletalMeshBindingId,
-    const FString& Label) 
-{
-    // Get the editor world context object
-    UWorld* World = nullptr;
-    if (GEditor)
-    {
-        World = GEditor->GetEditorWorldContext().World();
-    }
-
-    if (!World && GEngine)
-    {
-        for (const FWorldContext& Context : GEngine->GetWorldContexts())
-        {
-            if (Context.WorldType == EWorldType::Editor || Context.WorldType == EWorldType::PIE)
-            {
-                World = Context.World();
-                break;
-            }
-        }
-    }
-
-    UObject* WorldContextObject = World;
-
-    // Check if the world context object is valid
-    if (!WorldContextObject)
-    {
-        UE_LOG(LogBlendingAuto, Error, TEXT("WorldContextObject is null. Cannot proceed with baking the animation."));
-        return false;
-    }
-
-    USequencerAbstractionBPLibrary::OpenLevelSequenceInSequencer(LevelSequence);
-
-    FString TargetPackagePath = TEXT("/Game/Animations/BlendingAutomation");
-    // TODO: name: originalbase_label_baked, get the name of the original animation sequence and append the label to it
-    FString NewAssetName = FString::Printf(TEXT("%s_Baked"), *Label);
-    FSequenceOpenResult BakeResultError;
-
-    // Bake new animation into new animation fbx
-    bool bBakeSuccess = USequencerAbstractionBPLibrary::BakeBindingToAnimSequence(LevelSequence, WorldContextObject, SkeletalMeshBindingId, TargetPackagePath, NewAssetName, BakeResultError);
-
-    if (!bBakeSuccess)
-    {
-        UE_LOG(LogBlendingAuto, Error, TEXT("Failed to bake new animation sequence: %s"), *BakeResultError.Error);
-        return false;
-    }
-
-    return true;
-}
-
-bool UBlendingAutomationBFL::BlendAnimationSections(
-    ULevelSequence* LevelSequence,
-    UMovieScene* MovieScene,
-    FFrameRate DisplayRate,
-    TMap<int32, FSectionLabelEntry>& MarkerSectionMap,
-    int32 SectionIndex)
-{   
-    int32 OverlapPercentage = 20; // percentage of overlap between sections
-    FFrameRate TickResolution = MovieScene->GetTickResolution();
-
-    FSectionLabelEntry* HeadEntry = MarkerSectionMap.Find(SectionIndex - 1);
-    FSectionLabelEntry* NewEntry = MarkerSectionMap.Find(SectionIndex);
-    FSectionLabelEntry* TailEntry = MarkerSectionMap.Find(SectionIndex + 1);
-    UMovieSceneSection* HeadSection = HeadEntry->Section;
-    UMovieSceneSection* NewSection = NewEntry->Section;
-    UMovieSceneSection* TailSection = TailEntry->Section;
-
-    if (!HeadEntry || !NewEntry || !TailEntry)
-    {
-        UE_LOG(LogBlendingAuto, Warning, TEXT("Could not find entries for SectionIndex %d, %d, or %d in MarkerSectionMap."), SectionIndex - 1, SectionIndex, SectionIndex + 1);
-        return false;
-    }
-    
-    FFrameTime NewSectionLength = NewSection->GetRange().Size<FFrameNumber>();
-    FFrameTime HeadEndTime = HeadSection->GetRange().GetUpperBoundValue();
-    int32 OverlapFrames = FMath::RoundToInt(NewSectionLength.FloorToFrame().Value * (OverlapPercentage / 100.0f));
-
-    // Calculate the new start frame for the new section
-    int32 NewStartFrame = HeadEndTime.FloorToFrame().Value - OverlapFrames;
-
-    // Convert to the display rate
-    FFrameTime NewStartDisplayTime = FFrameRate::TransformTime(FFrameTime(NewStartFrame), MovieScene->GetTickResolution(), DisplayRate);
-    int32 NewStartDisplayFrame = NewStartDisplayTime.FloorToFrame().Value;
-
-    // // Move the new section to the new start frame (passing int32 frame)
-    // FSequenceOpenResult Result;
-    // bool bMoveSuccessNew = USequencerAbstractionBPLibrary::MoveAnimationSectionStartTo(LevelSequence, NewSection, NewStartDisplayFrame, Result);
-    // if (!bMoveSuccessNew)
-    // {
-    //     UE_LOG(LogBlendingAuto, Warning, TEXT("Failed to move new section to start frame %d: %s"), NewStartDisplayFrame, *Result.Error);
-    //     return false;
-    // }
-
-    // Calculate frametime HeadEndTime + 10
-    // 1. Define the offset in display frames
-    int32 DisplayFrameOffset = 10;
-
-    // 2. Transform HeadEndTime to Display Rate, then add 10 display frames
-    FFrameTime HeadEndDisplayTime = FFrameRate::TransformTime(HeadEndTime, TickResolution, DisplayRate);
-    int32 NewStartFrameOffset = HeadEndDisplayTime.FloorToFrame().Value + DisplayFrameOffset;
-
-    // Move the new section to the new start frame (passing int32 frame)
-    FSequenceOpenResult Result;
-    bool bMoveSuccessNew = USequencerAbstractionBPLibrary::MoveAnimationSectionStartTo(LevelSequence, NewSection, NewStartFrameOffset, Result);
-    if (!bMoveSuccessNew)
-    {
-        UE_LOG(LogBlendingAuto, Warning, TEXT("Failed to move new section to start frame %d: %s"), NewStartDisplayFrame, *Result.Error);
-        return false;
-    }
-
-    UE_LOG(LogBlendingAuto, Display, TEXT("New start Frame for new section %d"), NewStartFrameOffset);
-
-    FFrameTime TailStartTime = TailSection->GetRange().GetLowerBoundValue();
-    FFrameTime NewSectionEndTime = NewSection->GetRange().GetUpperBoundValue();
-    FFrameTime LengthBetweenSections = TailStartTime - NewSectionEndTime;
-    FFrameTime NewStartFrameTail = TailStartTime - FFrameTime(OverlapFrames) - LengthBetweenSections;
-
-    // Convert to the display rate
-    FFrameTime NewStartDisplayTimeTail = FFrameRate::TransformTime(FFrameTime(NewStartFrameTail), MovieScene->GetTickResolution(), DisplayRate);
-    int32 NewStartDisplayFrameTail = NewStartDisplayTimeTail.FloorToFrame().Value;
-
-    // // Move the tail section to the new start frame
-    // FSequenceOpenResult MoveResult;
-    // bool bMoveSuccessTail = USequencerAbstractionBPLibrary::MoveAnimationSectionStartTo(LevelSequence, TailSection, NewStartDisplayFrameTail, MoveResult);
-    // if (!bMoveSuccessTail)
-    // {
-    //     UE_LOG(LogBlendingAuto, Warning, TEXT("Failed to move section %s to start frame %d: %s"), *TailSection->GetName(), NewStartDisplayFrameTail, *MoveResult.Error);
-    //     return false;
-    // }
-
-    // Transform NewSectionEndTime to Display Rate before adding the offset
-    FFrameTime NewSectionEndDisplayTime = FFrameRate::TransformTime(NewSectionEndTime, TickResolution, DisplayRate);
-    int32 NewEndFrame = NewSectionEndDisplayTime.FloorToFrame().Value + DisplayFrameOffset;
-    
-
-    UE_LOG(LogBlendingAuto, Display, TEXT("New start Frame for tail section %d"), NewEndFrame);
-
-    // Move the tail section to the new start frame
-    FSequenceOpenResult MoveResult;
-    bool bMoveSuccessTail = USequencerAbstractionBPLibrary::MoveAnimationSectionStartTo(LevelSequence, TailSection, NewEndFrame, MoveResult);
-    if (!bMoveSuccessTail)
-    {
-        UE_LOG(LogBlendingAuto, Warning, TEXT("Failed to move section %s to start frame %d: %s"), *TailSection->GetName(), NewStartDisplayFrameTail, *MoveResult.Error);
-        return false;
-    }
-
-    // Mark the sequence as changed so the modification can be saved
-    MovieScene->MarkAsChanged();
-
-    return true;
-}
 
 bool UBlendingAutomationBFL::ResetLevelSequence(
     ULevelSequence* LevelSequence,
@@ -930,33 +542,7 @@ bool UBlendingAutomationBFL::RemoveSectionFromLevelSequence(
     return true;
 }
 
-bool UBlendingAutomationBFL::PlaceMarkersFromVTT(
-    const FString& OriginalAnimationSrtPath,
-    ULevelSequence* LevelSequence,
-    UMovieScene* MovieScene,
-    FFrameRate DisplayRate,
-    TArray<FMovieSceneMarkedFrame>& PlacedMarkers) 
-{   
-    TArray<FVTTEntry> OutMarkers;
-    bool bSuccess = UVTTParser::ParseVTTFile(OriginalAnimationSrtPath, OutMarkers);
 
-    if (!bSuccess)
-    {
-        UE_LOG(LogBlendingAuto, Warning, TEXT("Failed to parse VTT file."));
-    }
-
-    
-    for (FVTTEntry& Marker : OutMarkers)
-    {
-        UVTTParser::UpdateVTTEntryFrames(Marker, DisplayRate); 
-
-        // Add markers to the level sequence
-        TArray<FMovieSceneMarkedFrame> NewMarkers = UVTTParser::AddVTTEntryMarkers(LevelSequence, Marker.StartFrame.Value, Marker.EndFrame.Value, Marker.Text);
-        PlacedMarkers.Append(NewMarkers);
-    }
-
-    return bSuccess;
-}
 
 
 bool UBlendingAutomationBFL::LoadAnimSequence(UMocapImportSubsystem* MocapSubsystem, 
@@ -993,19 +579,14 @@ bool UBlendingAutomationBFL::LoadAnimSequence(UMocapImportSubsystem* MocapSubsys
 }
 
 bool UBlendingAutomationBFL::ValidateInputParameters(
-    ULevelSequence* LevelSequence,
-    const FString& OriginalAnimationPath,
-    const FString& OriginalAnimationSrtPath,
-    const FString& DonorAnimationPath,
-    const FString& Label,
-    int32 SubIndex)
+    const FSubstitutionRequest& SubstitutionRequest)
 {
-    if (!LevelSequence)                  { UE_LOG(LogBlendingAuto, Error, TEXT("LevelSequence is null.")); return false; }
-    if (OriginalAnimationPath.IsEmpty())   { UE_LOG(LogBlendingAuto, Error, TEXT("OriginalAnimationPath is empty.")); return false; }
-    if (OriginalAnimationSrtPath.IsEmpty()){ UE_LOG(LogBlendingAuto, Error, TEXT("OriginalAnimationSrtPath is empty.")); return false; }
-    if (DonorAnimationPath.IsEmpty())      { UE_LOG(LogBlendingAuto, Error, TEXT("DonorAnimationPath is empty.")); return false; }
-    if (Label.IsEmpty())                  { UE_LOG(LogBlendingAuto, Error, TEXT("Label is empty.")); return false; }
-    if (SubIndex < 0)                     { UE_LOG(LogBlendingAuto, Error, TEXT("SubIndex is negative.")); return false; }
+    if (!SubstitutionRequest.LevelSequence)                  { UE_LOG(LogBlendingAuto, Error, TEXT("LevelSequence is null.")); return false; }
+    if (SubstitutionRequest.OriginalAnimationPath.IsEmpty())   { UE_LOG(LogBlendingAuto, Error, TEXT("OriginalAnimationPath is empty.")); return false; }
+    if (SubstitutionRequest.OriginalAnimationSrtPath.IsEmpty()){ UE_LOG(LogBlendingAuto, Error, TEXT("OriginalAnimationSrtPath is empty.")); return false; }
+    if (SubstitutionRequest.DonorAnimationPath.IsEmpty())      { UE_LOG(LogBlendingAuto, Error, TEXT("DonorAnimationPath is empty.")); return false; }
+    if (SubstitutionRequest.Label.IsEmpty())                  { UE_LOG(LogBlendingAuto, Error, TEXT("Label is empty.")); return false; }
+    if (SubstitutionRequest.SubIndex < 0)                     { UE_LOG(LogBlendingAuto, Error, TEXT("SubIndex is negative.")); return false; }
 
     return true;
 }
@@ -1046,219 +627,4 @@ bool UBlendingAutomationBFL::FindAllSections(UMovieScene* MovieScene, TArray<UMo
     return true;
 }
 
-bool UBlendingAutomationBFL::SplitAnimationSection(UMovieSceneSkeletalAnimationSection* Section, UMovieScene* MovieScene, const TArray<FMovieSceneMarkedFrame>& Markers, TMap<int32, FSectionLabelEntry>& MarkerSectionMap, int32 SubIndex,  const FString& Label) {\
 
-    // sort markers
-    MovieScene->SortMarkedFrames();
-    
-    // get markers again to make sure they are in chronological order
-    TArray<FMovieSceneMarkedFrame> SortedMarkers = MovieScene->GetMarkedFrames();
-
-    // Find the 2 markers that correspond to the s: and e: labels for the given label 
-    FMovieSceneMarkedFrame StartMarker;
-    FMovieSceneMarkedFrame EndMarker;
-    bool bFoundStart = false;
-    bool bFoundEnd = false;
-
-    int32 GlossIndex = 0;
-    int32 StartMarkerIndex = INDEX_NONE;
-    int32 EndMarkerIndex = INDEX_NONE;
-    
-    // find out which indices are the start and end markers in the sequence
-    for (int32 i = 0; i < SortedMarkers.Num(); ++i)
-    {   
-        const FMovieSceneMarkedFrame& Marker = SortedMarkers[i];
-
-        if (Marker.Label.StartsWith(TEXT("s:")))
-        {   
-            if (GlossIndex == SubIndex)
-            {
-                StartMarker = Marker;
-                StartMarkerIndex = i;
-                bFoundStart = true;
-            }
-        }
-        else if (Marker.Label.StartsWith(TEXT("e:")))
-        {   
-            if (GlossIndex == SubIndex)
-            {
-                EndMarker = Marker;
-                EndMarkerIndex = i;
-                bFoundEnd = true;
-            }
-            GlossIndex++; // Increment pair index on encountering an end marker
-        }
-    }
-    
-    if (!bFoundStart || !bFoundEnd)
-    {
-        UE_LOG(LogBlendingAuto, Warning, TEXT("Could not find start or end markers for SubIndex: %d"), SubIndex);
-        return false;
-    }
-
-    // Now determine where to cut the section
-    FMovieSceneMarkedFrame CutStartMarker = StartMarker;
-    FMovieSceneMarkedFrame CutEndMarker = EndMarker;
-
-    const bool bIsFirstSubIndex = (SubIndex == 0);
-    // The last available pair of s:/e: markers is GlossIndex - 1 (due to post-increment)
-    const bool bIsLastSubIndex = (SubIndex == GlossIndex - 1);
-
-    // if subindex 0
-        // if end of index 0 and start of index 1 is same
-            // cut at start and end of index 0
-        // if end of index 0 is earlier than start of index 1 (there is a transition)
-            // cut at start of index 0 and start of index 1
-    
-    // if subindex is last
-        // if end of index - 1 is same as start of index
-            // cut at start and end of index
-        // if end of index - 1 is earlier than start of index
-            // cut at end of index - 1 and end of index
-
-    if (bIsFirstSubIndex)
-    {
-        // Find start marker of next index (SubIndex 1) by scanning forward
-        int32 NextStartIdx = INDEX_NONE;
-        for (int32 i = StartMarkerIndex + 1; i < SortedMarkers.Num(); ++i)
-        {
-            if (SortedMarkers[i].Label.StartsWith(TEXT("s:")))
-            {
-                NextStartIdx = i;
-                break;
-            }
-        }
-
-        if (NextStartIdx != INDEX_NONE)
-        {
-            const FMovieSceneMarkedFrame& NextStartMarker = SortedMarkers[NextStartIdx];
-            
-            // If end of index 0 is earlier than start of index 1 (there is a transition gap)
-            if (EndMarker.FrameNumber < NextStartMarker.FrameNumber)
-            {
-                // Cut at start of index 0 and start of index 1
-                CutEndMarker = NextStartMarker;
-            }
-        }
-    }
-    else if (bIsLastSubIndex)
-    {
-        // Find end marker of previous index (SubIndex - 1)
-        int32 PrevEndIdx = INDEX_NONE;
-        for (int32 i = StartMarkerIndex - 1; i >= 0; --i)
-        {
-            if (SortedMarkers[i].Label.StartsWith(TEXT("e:")))
-            {
-                PrevEndIdx = i;
-                break;
-            }
-        }
-
-        if (PrevEndIdx != INDEX_NONE)
-        {
-            const FMovieSceneMarkedFrame& PrevEndMarker = SortedMarkers[PrevEndIdx];
-
-            // If end of index - 1 is earlier than start of current index
-            if (PrevEndMarker.FrameNumber < StartMarker.FrameNumber)
-            {
-                // Cut at end of index - 1 and end of current index
-                CutStartMarker = PrevEndMarker;
-            }
-        }
-    }
-
-    TArray<FMovieSceneMarkedFrame> RelevantMarkers;
-    RelevantMarkers.Add(CutStartMarker);
-    RelevantMarkers.Add(CutEndMarker);
-
-    return SplitAnimationSections(Section, MovieScene, RelevantMarkers, MarkerSectionMap);
-}
-
-
-bool UBlendingAutomationBFL::SplitAnimationSections(UMovieSceneSkeletalAnimationSection* Section, UMovieScene* MovieScene, const TArray<FMovieSceneMarkedFrame>& Markers, TMap<int32, FSectionLabelEntry>& MarkerSectionMap) {
-    UMovieSceneSkeletalAnimationSection* RightSplitSection = Section;
-    UMovieSceneSkeletalAnimationSection* OutRightSplitSection = nullptr;
-    UMovieSceneSkeletalAnimationSection* OutLeftSplitSection = nullptr;
-
-    FFrameRate TickResolution = MovieScene->GetTickResolution();
-    FFrameRate DisplayRate = MovieScene->GetDisplayRate();
-
-    int32 MarkerIndex = 0;
-    int32 TransitionCounter = 0;
-    int32 GlossIndex = 0;
-
-    for (const FMovieSceneMarkedFrame& Marker : Markers)
-    {
-        FFrameTime DisplayTime = FFrameRate::TransformTime(
-            FFrameTime(Marker.FrameNumber), 
-            TickResolution, 
-            DisplayRate
-        );
-
-        int32 DisplayFrame = DisplayTime.FloorToFrame().Value;
-
-        // convert to display frame for logging
-        FFrameTime LowerBoundDisplayTime = FFrameRate::TransformTime(
-            FFrameTime(RightSplitSection->GetRange().GetLowerBoundValue().Value), 
-            TickResolution, 
-            DisplayRate
-        );
-
-        FFrameTime UpperBoundDisplayTime = FFrameRate::TransformTime(
-            FFrameTime(RightSplitSection->GetRange().GetUpperBoundValue().Value), 
-            TickResolution, 
-            DisplayRate
-        );
-
-        if (DisplayFrame <= LowerBoundDisplayTime.FloorToFrame().Value || DisplayFrame >= UpperBoundDisplayTime.FloorToFrame().Value)
-        {
-            continue;
-        }
-
-        USectionAbstraction::SplitAnimationSection(
-            RightSplitSection,
-            DisplayFrame, // <-- Pass the 30fps frame (29), NOT 23200
-            DisplayRate,
-            OutRightSplitSection,
-            OutLeftSplitSection,
-            false
-        );
-
-        if (!OutRightSplitSection || !OutLeftSplitSection)
-        {
-            UE_LOG(LogBlendingAuto, Warning, TEXT("Failed to split the animation section at marker: %s"), *Marker.Label);
-            continue;
-        }
-
-        RightSplitSection = OutRightSplitSection; // Continue splitting the right section for subsequent markers
-
-        // only take the part after the : for the label, e.g. "Marker: 1" becomes "1"
-        FString ShortLabel = Marker.Label;
-        FString DiscardedPrefix;
-
-        // if the prefix is e, that make the label the part after the color, otherwise transition   
-        if (Marker.Label.StartsWith(TEXT("e:")))
-        {
-            Marker.Label.Split(TEXT(":"), &DiscardedPrefix, &ShortLabel);
-            MarkerSectionMap.Add(MarkerIndex, USectionAbstraction::CreateSectionLabelEntry(OutLeftSplitSection, ShortLabel, GlossIndex));
-            GlossIndex++;
-        }
-        else
-        {   
-            // The transitions do not have a gloss index
-            ShortLabel = FString::Printf(TEXT("Transition_%d"), TransitionCounter);
-            MarkerSectionMap.Add(MarkerIndex, USectionAbstraction::CreateSectionLabelEntry(OutLeftSplitSection, ShortLabel, INDEX_NONE));
-            TransitionCounter++;
-        }
-
-        MarkerIndex++;
-    }
-
-    if (RightSplitSection)
-    {
-        // The transitions do not have a gloss index
-        MarkerSectionMap.Add(MarkerIndex, USectionAbstraction::CreateSectionLabelEntry(RightSplitSection, FString::Printf(TEXT("Transition_%d"), TransitionCounter), INDEX_NONE));
-    }
-
-    return true;
-}

@@ -1,4 +1,10 @@
-// Types/BlendingAutomationTypes.h
+/**
+ * BlendingAutomationTypes.h
+ * 
+ * Defines the data structures used for blending pipeline 
+ * for the substitution request and the context passed 
+ * through the stages of the pipeline.
+ */
 #pragma once
 
 #include "CoreMinimal.h"
@@ -10,10 +16,12 @@
 #include "Tracks/MovieSceneSkeletalAnimationTrack.h"
 #include "Sections/MovieSceneSkeletalAnimationSection.h"
 #include "SequencerAbstractionBPLibrary.h"
+#include "MocapImportSubsystem.h"
 #include "BlendingAutomationTypes.generated.h"
 
+// TODO: in file SkeletalSequenceDataAsset.h? with blending offsets and hardcoded names and filepaths.
 USTRUCT(BlueprintType)
-FSubstitutionRequest
+struct FSubstitutionRequest
 {
     GENERATED_BODY()
 
@@ -54,6 +62,9 @@ struct FSubstitutionContext
     
     UMovieSceneSkeletalAnimationTrack* Track = nullptr;
     FGuid SkeletalMeshBindingId;
+
+    UMocapImportSubsystem* MocapSubsystem = nullptr;
     
     TMap<int32, FSectionLabelEntry> MarkerSectionMap;
+
 };

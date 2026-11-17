@@ -24,6 +24,7 @@ class BLENDINGAUTOMATIONEDITOR_API UBlendingAutomationBFL : public UBlueprintFun
     GENERATED_BODY()
 
 public:
+    /** */
     UFUNCTION(BlueprintCallable, Category = "Blending Automation")
     static bool ProcessAnimationSubstitution(
         ULevelSequence* LevelSequence,
@@ -35,16 +36,6 @@ public:
         int32 SubIndex,
         UAnimSequence*& OutNewAnimation);
 
-    /**
-     * Exports all marked frames in the Level Sequence to an SRT subtitle file.
-     *
-     * @param LevelSequence The Level Sequence object containing the markers.
-     * @param OutputSrtFilePath The full target output path for the SRT file.
-     * @return True if the SRT file was exported successfully.
-     */
-    UFUNCTION(BlueprintCallable, Category = "BlendingAutomation|Export")
-    static bool ExportMarkersToSrt(ULevelSequence* LevelSequence, 
-        const FString& OutputSrtFilePath);
 
 private:
     
@@ -66,17 +57,6 @@ private:
         UMovieSceneSkeletalAnimationTrack*& OutTrack,
         FGuid& OutSkeletalMeshBindingId);
 
-    static bool PlaceMarkersAndSplit(
-        ULevelSequence* LevelSequence,
-        UMovieScene* MovieScene,
-        FFrameRate DisplayRate,
-        const FString& OriginalAnimationSrtPath,
-        UAnimSequence* originalAnimSequence,
-        FGuid SkeletalMeshBindingId,
-        int32 SubIndex,
-        const FString& Label,
-        TMap<int32, FSectionLabelEntry>& OutMarkerSectionMap);
-
     static bool ReplaceSection(
         ULevelSequence* LevelSequence,
         UMovieScene* MovieScene,
@@ -87,13 +67,6 @@ private:
         int32 SubIndex,
         const FString& Label);
 
-    static bool BlendAnimationSectionsAndMatchToBone(
-        ULevelSequence* LevelSequence,
-        UMovieScene* MovieScene,
-        FFrameRate DisplayRate,
-        TMap<int32, FSectionLabelEntry>& MarkerSectionMap,
-        int32 SectionIndex,
-        USkeletalMesh* TargetSkeletalMesh);
 
     static bool ValidateInputParameters(
         ULevelSequence* LevelSequence,
@@ -111,19 +84,6 @@ private:
         UMovieScene* MovieScene,
         TArray<UMovieSceneSkeletalAnimationSection*>& OutSections);
 
-    static bool SplitAnimationSections(
-        UMovieSceneSkeletalAnimationSection* Section,
-        UMovieScene* MovieScene,
-        const TArray<FMovieSceneMarkedFrame>& Markers,
-        TMap<int32, FSectionLabelEntry>& MarkerSectionMap);
-    
-    static bool SplitAnimationSection(
-        UMovieSceneSkeletalAnimationSection* Section,
-        UMovieScene* MovieScene,
-        const TArray<FMovieSceneMarkedFrame>& Markers,
-        TMap<int32, FSectionLabelEntry>& MarkerSectionMap,
-        int32 SubIndex,
-        const FString& Label);
 
     static bool LoadAnimSequence(
         UMocapImportSubsystem* MocapSubsystem,
@@ -131,13 +91,6 @@ private:
         USkeleton* TargetSkeleton,
         UAnimSequence*& OutAnimSequence);
 
-    static bool PlaceMarkersFromVTT(
-        const FString& OriginalAnimationSrtPath,
-        ULevelSequence* LevelSequence,
-        UMovieScene* MovieScene,
-        FFrameRate DisplayRate,
-        TArray<FMovieSceneMarkedFrame>& PlacedMarkers
-    );
 
     static bool RemoveSectionFromLevelSequence(
         ULevelSequence* LevelSequence,
@@ -164,20 +117,6 @@ private:
         FGuid SkeletalMeshBindingId
     );
 
-    static bool BlendAnimationSections(
-        ULevelSequence* LevelSequence,
-        UMovieScene* MovieScene,
-        FFrameRate DisplayRate,
-        TMap<int32, FSectionLabelEntry>& MarkerSectionMap,
-        int32 SectionIndex
-    );
-
-    static bool BakeAnimationSequence(
-        ULevelSequence* LevelSequence,
-        UMovieScene* MovieScene,
-        FGuid SkeletalMeshBindingId,
-        const FString& Label
-    );
 
     static bool FitTailSections(
         ULevelSequence* LevelSequence,
@@ -186,15 +125,6 @@ private:
         TMap<int32, FSectionLabelEntry>& MarkerSectionMap,
         int32 SectionIndex,
         UAnimSequence* donorAnimSequence
-    );
-
-    static bool MatchSectionsToBone(
-        ULevelSequence* LevelSequence,
-        UMovieScene* MovieScene,
-        FFrameRate DisplayRate,
-        TMap<int32, FSectionLabelEntry>& MarkerSectionMap,
-        int32 SectionIndex,
-        USkeletalMesh* TargetSkeletalMesh
     );
 
     static void PrintSections(UMovieScene* MovieScene);
