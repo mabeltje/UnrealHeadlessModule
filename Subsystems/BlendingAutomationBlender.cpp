@@ -15,7 +15,9 @@
 #include "../BlendingAutomationBFL.h"
 #include "SequencerAbstractionBPLibrary.h"
 
-
+// ============================================================================
+// Stage 4: Blend Sections and Match to Bone Entry Point
+// =============================================================================
 bool FBlendingAutomationBlender::BlendAnimationSectionsAndMatchToBone(
     FSubstitutionContext& SubstitutionContext,
     const FSubstitutionRequest& SubstitutionRequest)
@@ -63,9 +65,6 @@ bool FBlendingAutomationBlender::BlendAnimationSections(
     const FSubstitutionRequest& SubstitutionRequest,
     int32 SectionIndex)
 {   
-    // TODO: Do not hardcode this here
-    int32 OverlapPercentage = 20; // percentage of overlap between sections
-
     FSectionLabelEntry* HeadEntry = SubstitutionContext.MarkerSectionMap.Find(SectionIndex - 1);
     FSectionLabelEntry* NewEntry = SubstitutionContext.MarkerSectionMap.Find(SectionIndex);
     FSectionLabelEntry* TailEntry = SubstitutionContext.MarkerSectionMap.Find(SectionIndex + 1);
@@ -86,29 +85,11 @@ bool FBlendingAutomationBlender::BlendAnimationSections(
         return false;
     }
     
-    FFrameTime NewSectionLength = NewSection->GetRange().Size<FFrameNumber>();
-    FFrameTime HeadEndTime = HeadSection->GetRange().GetUpperBoundValue();
-    int32 OverlapFrames = FMath::RoundToInt(NewSectionLength.FloorToFrame().Value * (OverlapPercentage / 100.0f));
-
-    // Calculate the new start frame for the new section
-    int32 NewStartFrame = HeadEndTime.FloorToFrame().Value - OverlapFrames;
-
-    // Convert to the display rate
-    FFrameTime NewStartDisplayTime = FFrameRate::TransformTime(FFrameTime(NewStartFrame), SubstitutionContext.TickResolution, SubstitutionContext.DisplayRate);
-    int32 NewStartDisplayFrame = NewStartDisplayTime.FloorToFrame().Value;
-
-    // // Move the new section to the new start frame (passing int32 frame)
-    // FSequenceOpenResult Result;
-    // bool bMoveSuccessNew = USequencerAbstractionBPLibrary::MoveAnimationSectionStartTo(LevelSequence, NewSection, NewStartDisplayFrame, Result);
-    // if (!bMoveSuccessNew)
-    // {
-    //     UE_LOG(LogBlendingAuto, Warning, TEXT("Failed to move new section to start frame %d: %s"), NewStartDisplayFrame, *Result.Error);
-    //     return false;
-    // }
-
+    
     // Calculate frametime HeadEndTime + 10
     // 1. Define the offset in display frames
-    // TODO: Temp solution, fix this
+    // TODO: Calculate the gap here
+    FFrameTime HeadEndTime = HeadSection->GetRange().GetUpperBoundValue();
     int32 DisplayFrameOffset = 10;
 
     // 2. Transform HeadEndTime to Display Rate, then add 10 display frames
@@ -126,23 +107,7 @@ bool FBlendingAutomationBlender::BlendAnimationSections(
 
     UE_LOG(LogBlendingAuto, Display, TEXT("New start Frame for new section %d"), NewStartFrameOffset);
 
-    FFrameTime TailStartTime = TailSection->GetRange().GetLowerBoundValue();
     FFrameTime NewSectionEndTime = NewSection->GetRange().GetUpperBoundValue();
-    FFrameTime LengthBetweenSections = TailStartTime - NewSectionEndTime;
-    FFrameTime NewStartFrameTail = TailStartTime - FFrameTime(OverlapFrames) - LengthBetweenSections;
-
-    // Convert to the display rate
-    FFrameTime NewStartDisplayTimeTail = FFrameRate::TransformTime(FFrameTime(NewStartFrameTail), SubstitutionContext.TickResolution, SubstitutionContext.DisplayRate);
-    int32 NewStartDisplayFrameTail = NewStartDisplayTimeTail.FloorToFrame().Value;
-
-    // // Move the tail section to the new start frame
-    // FSequenceOpenResult MoveResult;
-    // bool bMoveSuccessTail = USequencerAbstractionBPLibrary::MoveAnimationSectionStartTo(LevelSequence, TailSection, NewStartDisplayFrameTail, MoveResult);
-    // if (!bMoveSuccessTail)
-    // {
-    //     UE_LOG(LogBlendingAuto, Warning, TEXT("Failed to move section %s to start frame %d: %s"), *TailSection->GetName(), NewStartDisplayFrameTail, *MoveResult.Error);
-    //     return false;
-    // }
 
     // Transform NewSectionEndTime to Display Rate before adding the offset
     FFrameTime NewSectionEndDisplayTime = FFrameRate::TransformTime(NewSectionEndTime, SubstitutionContext.TickResolution, SubstitutionContext.DisplayRate);

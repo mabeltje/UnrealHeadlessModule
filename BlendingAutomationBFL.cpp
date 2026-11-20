@@ -415,83 +415,69 @@ bool UBlendingAutomationBFL::FitTailSections(ULevelSequence* LevelSequence,
         TMap<int32, FSectionLabelEntry>& MarkerSectionMap,
         int32 SectionIndex,
         UAnimSequence* donorAnimSequence)
-{
-    // Only move the tail section if it exists, i.e., if SectionIndex is not the last index in the MarkerSectionMap
-    if (SectionIndex < MarkerSectionMap.Num() - 1) {
-        FSectionLabelEntry* NewEntry = MarkerSectionMap.Find(SectionIndex);
-        FSectionLabelEntry* TailEntry = MarkerSectionMap.Find(SectionIndex + 1);
+{   
+    // TODO: Get this functions on the substitution context and request
 
-        // Get length of the donor animation sequence in frames
-        // TODO: get tickresolution from the inialized variable
-        FFrameRate TickResolution = MovieScene->GetTickResolution();
-        FFrameTime DonorLength = donorAnimSequence->GetPlayLength() * TickResolution;
+    // Find the head and the tail sections
+    FSectionLabelEntry* NewEntry = MarkerSectionMap.Find(SectionIndex);
+    FSectionLabelEntry* TailEntry = MarkerSectionMap.Find(SectionIndex + 1);
 
-        if (!NewEntry || !TailEntry)
-        {
-            UE_LOG(LogBlendingAuto, Warning, TEXT("Could not find entries for SectionIndex %d or %d in MarkerSectionMap."), SectionIndex, SectionIndex + 1);
-            return false;
-        }
+    // Check if the entries exist
+    if (!NewEntry || !TailEntry)
+    {
+        UE_LOG(LogBlendingAuto, Warning, TEXT("Could not find entries for SectionIndex %d or %d in MarkerSectionMap."), SectionIndex, SectionIndex + 1);
+        return false;
+    }
 
-        // Calculate the gap between sectionindex -1 and sectionindex + 1
-        if (SectionIndex > 0) {
-            FSectionLabelEntry* HeadEntry = MarkerSectionMap.Find(SectionIndex - 1);
-            if (!HeadEntry)
-            {
-                UE_LOG(LogBlendingAuto, Warning, TEXT("Could not find entry for SectionIndex %d in MarkerSectionMap."), SectionIndex - 1);
-                return false;
-            }
+    // Get length of the donor animation sequence in frames
+    FFrameRate TickResolution = MovieScene->GetTickResolution();
+    FFrameTime DonorLength = donorAnimSequence->GetPlayLength() * TickResolution;
 
-            UMovieSceneSection* HeadSection = HeadEntry->Section;
-            if (!HeadSection)
-            {
-                UE_LOG(LogBlendingAuto, Warning, TEXT("Could not find section for SectionIndex %d."), SectionIndex - 1);
-                return false;
-            }
+    if (!NewEntry || !TailEntry)
+    {
+        UE_LOG(LogBlendingAuto, Warning, TEXT("Could not find entries for SectionIndex %d or %d in MarkerSectionMap."), SectionIndex, SectionIndex + 1);
+        return false;
+    }
 
-            FFrameTime HeadEndTime = HeadSection->GetRange().GetUpperBoundValue();
-            FFrameTime TailStartTime = TailEntry->Section->GetRange().GetLowerBoundValue();
-            int32 LengthBetweenSections = TailStartTime.FloorToFrame().Value - HeadEndTime.FloorToFrame().Value;
+    FSectionLabelEntry* HeadEntry = MarkerSectionMap.Find(SectionIndex - 1);
+    if (!HeadEntry)
+    {
+        UE_LOG(LogBlendingAuto, Warning, TEXT("Could not find entry for SectionIndex %d in MarkerSectionMap."), SectionIndex - 1);
+        return false;
+    }
 
-            // TODO: it is not necessary to do this in a for loop.
-            if (LengthBetweenSections < DonorLength.FloorToFrame().Value)
-            {
-                int32 Difference = DonorLength.FloorToFrame().Value - LengthBetweenSections; // Add 2 to ensure the section starts after the previous one
-                // Move the tail section to the right by the difference
-                for (int32 i = SectionIndex + 1; i < MarkerSectionMap.Num(); i++)
-                {
-                    FSectionLabelEntry* CurrentEntry = MarkerSectionMap.Find(i);
-                    if (!CurrentEntry)
-                    {
-                        UE_LOG(LogBlendingAuto, Warning, TEXT("Could not find entry for SectionIndex %d in MarkerSectionMap."), i);
-                        continue;
-                    }
+    UMovieSceneSection* HeadSection = HeadEntry->Section;
+    if (!HeadSection)
+    {
+        UE_LOG(LogBlendingAuto, Warning, TEXT("Could not find section for SectionIndex %d."), SectionIndex - 1);
+        return false;
+    }
 
-                    UMovieSceneSection* CurrentSection = CurrentEntry->Section;
-                    if (!CurrentSection)
-                    {
-                        UE_LOG(LogBlendingAuto, Warning, TEXT("Could not find section for SubIndex %d."), i);
-                        continue;
-                    }
+    FFrameTime HeadEndTime = HeadSection->GetRange().GetUpperBoundValue();
+    FFrameTime TailStartTime = TailEntry->Section->GetRange().GetLowerBoundValue();
+    int32 LengthBetweenSections = TailStartTime.FloorToFrame().Value - HeadEndTime.FloorToFrame().Value;
 
-                    FFrameTime CurrentStartTime = CurrentSection->GetRange().GetLowerBoundValue();
-                    int32 NewStartFrameForCurrent = CurrentStartTime.FloorToFrame().Value + Difference;
 
-                    // Convert to the display rate
-                    FFrameTime NewStartDisplayTimeForCurrent = FFrameRate::TransformTime(FFrameTime(NewStartFrameForCurrent), MovieScene->GetTickResolution(), DisplayRate);
-                    // TODO: Find out if this is engough for all cases
-                    int32 NewStartDisplayFrameForCurrent = NewStartDisplayTimeForCurrent.FloorToFrame().Value + 10;
+    // If the gap that was left is smaller than the donor animation length, move the tail section to the right by the difference
+    int32 Difference = LengthBetweenSections - DonorLength.FloorToFrame().Value;
 
-                    FSequenceOpenResult MoveResult;
-                    bool bMoveSuccess = USequencerAbstractionBPLibrary::MoveAnimationSectionStartTo(LevelSequence, CurrentSection, NewStartDisplayFrameForCurrent, MoveResult);
-                    if (!bMoveSuccess)
-                    {
-                        UE_LOG(LogBlendingAuto, Warning, TEXT("Failed to move section %s to start frame %d: %s"), *CurrentSection->GetName(), NewStartDisplayFrameForCurrent, *MoveResult.Error);
-                        return false;
-                    }
-                }
-            }
-        }
-       
+    // Move the tail section to fit the new donor animation length
+    int32 NewStartFrameForTail = TailStartTime.FloorToFrame().Value - Difference;
+
+    // Convert to the display rate
+    FFrameTime NewStartDisplayTimeForTail = FFrameRate::TransformTime(FFrameTime(NewStartFrameForTail), MovieScene->GetTickResolution(), DisplayRate);
+
+    // TODO: Find out if this is engough for all cases
+    // Maybe floor to frame is not enough, maybe we need to ceil to frame or round to frame, or maybe we need to add 1 frame to the new start frame for the tail section
+    // We need to make sure there is enough space for the new section to be added
+    int32 NewStartDisplayFrameForTail = NewStartDisplayTimeForTail.FloorToFrame().Value + 1;
+
+    FSequenceOpenResult MoveResult;
+    bool bMoveSuccess = USequencerAbstractionBPLibrary::MoveAnimationSectionStartTo(LevelSequence, TailEntry->Section, NewStartDisplayFrameForTail, MoveResult);
+    if (!bMoveSuccess)
+    {
+        UE_LOG(LogBlendingAuto, Warning, TEXT("Failed to move section %s to start frame %d: %s"), *TailEntry->Section->GetName(), NewStartDisplayFrameForTail, *MoveResult.Error);
+        return false;
     }
 
     return true;
@@ -509,6 +495,8 @@ bool UBlendingAutomationBFL::AddDonorAnimationSection(
     const FString& Label
     ) 
 {   
+    // TODO: Get this functions on the substitution context and request
+
     // Get the start frame of the section in the subindex from the marker section map
     FSectionLabelEntry* FoundEntry = MarkerSectionMap.Find(SectionIndex);
     
@@ -518,9 +506,6 @@ bool UBlendingAutomationBFL::AddDonorAnimationSection(
         return false;
     }
 
-    // Print the found entry for debugging
-    FString SectionName = FoundEntry->Section ? FoundEntry->Section->GetName() : TEXT("nullptr"); 
-    
     // Get the start frame of the old section
     FFrameRate TickResolution = MovieScene->GetTickResolution();
     int32 StartFrameOldSection = FoundEntry->Section->GetRange().GetLowerBoundValue().Value;
