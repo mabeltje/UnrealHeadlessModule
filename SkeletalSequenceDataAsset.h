@@ -8,6 +8,7 @@
 
 class USkeleton;
 class UAnimSequence;
+class ULevelSequence;
 
 USTRUCT(BlueprintType)
 struct FFrameRateConfig

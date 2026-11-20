@@ -1,47 +1,47 @@
-#include "BlendingAutomationSplitter.h"
-#include "../BlendingAutomationBFL.h"
-#include "VTTParser.h"
-#include "SequencerAbstractionBPLibrary.h"
-
 /**
- * class: FBlendingAutomationSplitter
- * Places markers from a VTT file and splits the animation section accordingly.
+ * BlendingAutomationSplitter.cpp
+ *
+ * Implements Stage 2 of the blending automation pipeline:
+ *   1. Parse start/end gloss markers from the SRT/VTT file and place them on the timeline.
+ *   2. Insert the original animation sequence onto the target skeletal mesh binding.
+ *   3. Split the section before and after the target SubIndex into [Head, Target, Tail] segments.
  */
+
+#include "BlendingAutomationSplitter.h"
+
+#include "../BlendingAutomationBFL.h"
+#include "SequencerAbstractionBPLibrary.h"
+#include "VTTParser.h"
 
 
 bool FBlendingAutomationSplitter::PlaceMarkersAndSplit(
-    ULevelSequence* LevelSequence,
-    UMovieScene* MovieScene,
-    FFrameRate DisplayRate,
-    const FString& OriginalAnimationSrtPath,
-    UAnimSequence* originalAnimSequence,
-    FGuid SkeletalMeshBindingId,
-    int32 SubIndex,
-    const FString& Label,
-    TMap<int32, FSectionLabelEntry>& OutMarkerSectionMap)
+    FSubstitutionContext& SubstitutionContext,
+    const FSubstitutionRequest& SubstitutionRequest)
 {
-    // Place markers from the VTT file into the level sequence
+    // Parse SRT and place markers on the timeline
     TArray<FMovieSceneMarkedFrame> PlacedMarkers;
-    bool bMarkersPlaced = PlaceMarkersFromVTT(OriginalAnimationSrtPath, LevelSequence, MovieScene, DisplayRate, PlacedMarkers);
+    bool bMarkersPlaced = PlaceMarkersFromVTT(SubstitutionContext, SubstitutionRequest);
     if (!bMarkersPlaced)
     {
         UE_LOG(LogBlendingAuto, Warning, TEXT("No markers were placed from the VTT file."));
         return false;
     }  
     
-    // Load animation into level sequence
+    // Add the original animation sequence to the skeletal mesh binding
     FSequenceOpenResult ResultError;
-    UMovieSceneSkeletalAnimationSection* AnimSection = USequencerAbstractionBPLibrary::AddAnimSectionToBinding(LevelSequence, SkeletalMeshBindingId, originalAnimSequence, 0, 0, false, ResultError);
+    UMovieSceneSkeletalAnimationSection* AnimSection = USequencerAbstractionBPLibrary::AddAnimSectionToBinding(SubstitutionRequest.LevelSequence, SubstitutionContext.SkeletalMeshBindingId, SubstitutionContext.OriginalAnim, 0, 0, false, ResultError);
     
     if (AnimSection == nullptr)
     {
         UE_LOG(LogBlendingAuto, Error, TEXT("Failed to add original animation section to the level sequence."));
         return false;
-    }
+    } 
+
+    SubstitutionContext.MarkerSectionMap.Empty();
 
     // TODO: Also look if the transition before and after the subindex section needs to be removed
     // Cut the animation into segments based on the markers, but only split before and after the subindex
-    bool bSplitSuccess = SplitAnimationSection(AnimSection, MovieScene, PlacedMarkers, OutMarkerSectionMap, SubIndex, Label);
+    bool bSplitSuccess = SplitAnimationSection(AnimSection, SubstitutionContext, SubstitutionRequest);
     if (!bSplitSuccess)
     {
         UE_LOG(LogBlendingAuto, Warning, TEXT("Failed to split animation sections based on markers."));
@@ -52,14 +52,11 @@ bool FBlendingAutomationSplitter::PlaceMarkersAndSplit(
 }
 
 bool FBlendingAutomationSplitter::PlaceMarkersFromVTT(
-    const FString& OriginalAnimationSrtPath,
-    ULevelSequence* LevelSequence,
-    UMovieScene* MovieScene,
-    FFrameRate DisplayRate,
-    TArray<FMovieSceneMarkedFrame>& PlacedMarkers) 
+    FSubstitutionContext& SubstitutionContext,
+    const FSubstitutionRequest& SubstitutionRequest) 
 {   
     TArray<FVTTEntry> OutMarkers;
-    bool bSuccess = UVTTParser::ParseVTTFile(OriginalAnimationSrtPath, OutMarkers);
+    bool bSuccess = UVTTParser::ParseVTTFile(SubstitutionRequest.OriginalAnimationSrtPath, OutMarkers);
 
     if (!bSuccess)
     {
@@ -69,25 +66,24 @@ bool FBlendingAutomationSplitter::PlaceMarkersFromVTT(
     
     for (FVTTEntry& Marker : OutMarkers)
     {
-        UVTTParser::UpdateVTTEntryFrames(Marker, DisplayRate); 
+        UVTTParser::UpdateVTTEntryFrames(Marker, SubstitutionContext.DisplayRate); 
 
         // Add markers to the level sequence
-        TArray<FMovieSceneMarkedFrame> NewMarkers = UVTTParser::AddVTTEntryMarkers(LevelSequence, Marker.StartFrame.Value, Marker.EndFrame.Value, Marker.Text);
-        PlacedMarkers.Append(NewMarkers);
+        TArray<FMovieSceneMarkedFrame> NewMarkers = UVTTParser::AddVTTEntryMarkers(SubstitutionRequest.LevelSequence, Marker.StartFrame.Value, Marker.EndFrame.Value, Marker.Text);
+        SubstitutionContext.PlacedMarkers.Append(NewMarkers);
     }
 
     return bSuccess;
 }
-bool FBlendingAutomationSplitter::SplitAnimationSection(UMovieSceneSkeletalAnimationSection* Section, 
-    UMovieScene* MovieScene, 
-    const TArray<FMovieSceneMarkedFrame>& Markers, 
-    TMap<int32, FSectionLabelEntry>& MarkerSectionMap, 
-    int32 SubIndex,  
-    const FString& Label) 
+bool FBlendingAutomationSplitter::SplitAnimationSection(
+    UMovieSceneSkeletalAnimationSection* Section, 
+    FSubstitutionContext& SubstitutionContext,
+    const FSubstitutionRequest& SubstitutionRequest) 
 {
 
-    // sort markers
-    MovieScene->SortMarkedFrames();
+    // Sort placed markers in the MovieScene to ensure they are in chronological order
+    UMovieScene* MovieScene = SubstitutionContext.MovieScene;
+    SubstitutionContext.MovieScene->SortMarkedFrames();
     
     // get markers again to make sure they are in chronological order
     TArray<FMovieSceneMarkedFrame> SortedMarkers = MovieScene->GetMarkedFrames();
@@ -109,7 +105,7 @@ bool FBlendingAutomationSplitter::SplitAnimationSection(UMovieSceneSkeletalAnima
 
         if (Marker.Label.StartsWith(TEXT("s:")))
         {   
-            if (GlossIndex == SubIndex)
+            if (GlossIndex == SubstitutionRequest.SubIndex)
             {
                 StartMarker = Marker;
                 StartMarkerIndex = i;
@@ -118,7 +114,7 @@ bool FBlendingAutomationSplitter::SplitAnimationSection(UMovieSceneSkeletalAnima
         }
         else if (Marker.Label.StartsWith(TEXT("e:")))
         {   
-            if (GlossIndex == SubIndex)
+            if (GlossIndex == SubstitutionRequest.SubIndex)
             {
                 EndMarker = Marker;
                 EndMarkerIndex = i;
@@ -130,7 +126,7 @@ bool FBlendingAutomationSplitter::SplitAnimationSection(UMovieSceneSkeletalAnima
     
     if (!bFoundStart || !bFoundEnd)
     {
-        UE_LOG(LogBlendingAuto, Warning, TEXT("Could not find start or end markers for SubIndex: %d"), SubIndex);
+        UE_LOG(LogBlendingAuto, Warning, TEXT("Could not find start or end markers for SubIndex: %d"), SubstitutionRequest.SubIndex);
         return false;
     }
 
@@ -138,9 +134,9 @@ bool FBlendingAutomationSplitter::SplitAnimationSection(UMovieSceneSkeletalAnima
     FMovieSceneMarkedFrame CutStartMarker = StartMarker;
     FMovieSceneMarkedFrame CutEndMarker = EndMarker;
 
-    const bool bIsFirstSubIndex = (SubIndex == 0);
+    const bool bIsFirstSubIndex = (SubstitutionRequest.SubIndex == 0);
     // The last available pair of s:/e: markers is GlossIndex - 1 (due to post-increment)
-    const bool bIsLastSubIndex = (SubIndex == GlossIndex - 1);
+    const bool bIsLastSubIndex = (SubstitutionRequest.SubIndex == GlossIndex - 1);
 
     // if subindex 0
         // if end of index 0 and start of index 1 is same
@@ -209,27 +205,28 @@ bool FBlendingAutomationSplitter::SplitAnimationSection(UMovieSceneSkeletalAnima
     RelevantMarkers.Add(CutStartMarker);
     RelevantMarkers.Add(CutEndMarker);
 
-    return SplitAnimationSections(Section, MovieScene, RelevantMarkers, MarkerSectionMap);
+    return SplitAnimationSections(Section, RelevantMarkers, SubstitutionContext, SubstitutionRequest);
 }
 
 
-bool FBlendingAutomationSplitter::SplitAnimationSections(UMovieSceneSkeletalAnimationSection* Section, 
-    UMovieScene* MovieScene, 
-    const TArray<FMovieSceneMarkedFrame>& Markers, 
-    TMap<int32, FSectionLabelEntry>& MarkerSectionMap) 
+bool FBlendingAutomationSplitter::SplitAnimationSections(
+    UMovieSceneSkeletalAnimationSection* Section, 
+    const TArray<FMovieSceneMarkedFrame>& RelevantMarkers,
+    FSubstitutionContext& SubstitutionContext,
+    const FSubstitutionRequest& SubstitutionRequest) 
 {
     UMovieSceneSkeletalAnimationSection* RightSplitSection = Section;
     UMovieSceneSkeletalAnimationSection* OutRightSplitSection = nullptr;
     UMovieSceneSkeletalAnimationSection* OutLeftSplitSection = nullptr;
 
-    FFrameRate TickResolution = MovieScene->GetTickResolution();
-    FFrameRate DisplayRate = MovieScene->GetDisplayRate();
+    FFrameRate TickResolution = SubstitutionContext.TickResolution;
+    FFrameRate DisplayRate = SubstitutionContext.DisplayRate;
 
     int32 MarkerIndex = 0;
     int32 TransitionCounter = 0;
     int32 GlossIndex = 0;
 
-    for (const FMovieSceneMarkedFrame& Marker : Markers)
+    for (const FMovieSceneMarkedFrame& Marker : RelevantMarkers)
     {
         FFrameTime DisplayTime = FFrameRate::TransformTime(
             FFrameTime(Marker.FrameNumber), 
@@ -282,14 +279,14 @@ bool FBlendingAutomationSplitter::SplitAnimationSections(UMovieSceneSkeletalAnim
         if (Marker.Label.StartsWith(TEXT("e:")))
         {
             Marker.Label.Split(TEXT(":"), &DiscardedPrefix, &ShortLabel);
-            MarkerSectionMap.Add(MarkerIndex, USectionAbstraction::CreateSectionLabelEntry(OutLeftSplitSection, ShortLabel, GlossIndex));
+            SubstitutionContext.MarkerSectionMap.Add(MarkerIndex, USectionAbstraction::CreateSectionLabelEntry(OutLeftSplitSection, ShortLabel, GlossIndex));
             GlossIndex++;
         }
         else
         {   
             // The transitions do not have a gloss index
             ShortLabel = FString::Printf(TEXT("Transition_%d"), TransitionCounter);
-            MarkerSectionMap.Add(MarkerIndex, USectionAbstraction::CreateSectionLabelEntry(OutLeftSplitSection, ShortLabel, INDEX_NONE));
+            SubstitutionContext.MarkerSectionMap.Add(MarkerIndex, USectionAbstraction::CreateSectionLabelEntry(OutLeftSplitSection, ShortLabel, INDEX_NONE));
             TransitionCounter++;
         }
 
@@ -299,7 +296,7 @@ bool FBlendingAutomationSplitter::SplitAnimationSections(UMovieSceneSkeletalAnim
     if (RightSplitSection)
     {
         // The transitions do not have a gloss index
-        MarkerSectionMap.Add(MarkerIndex, USectionAbstraction::CreateSectionLabelEntry(RightSplitSection, FString::Printf(TEXT("Transition_%d"), TransitionCounter), INDEX_NONE));
+        SubstitutionContext.MarkerSectionMap.Add(MarkerIndex, USectionAbstraction::CreateSectionLabelEntry(RightSplitSection, FString::Printf(TEXT("Transition_%d"), TransitionCounter), INDEX_NONE));
     }
 
     return true;

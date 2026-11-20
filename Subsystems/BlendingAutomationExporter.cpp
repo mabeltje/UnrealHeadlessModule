@@ -3,6 +3,8 @@
 #include "Editor.h"
 #include "Engine/Engine.h"
 #include "SequencerAbstractionBPLibrary.h"
+#include "Misc/FileHelper.h"
+#include "Misc/Paths.h"
 
 /**
  * class: FBlendingAutomationExporter
@@ -14,10 +16,8 @@
 
 
 bool FBlendingAutomationExporter::BakeAnimationSequence(
-    ULevelSequence* LevelSequence,
-    UMovieScene* MovieScene,
-    FGuid SkeletalMeshBindingId,
-    const FString& Label) 
+    FSubstitutionContext& SubstitutionContext,
+    const FSubstitutionRequest& SubstitutionRequest)
 {   
     // Get the editor world context object
     UWorld* World = nullptr;
@@ -47,15 +47,15 @@ bool FBlendingAutomationExporter::BakeAnimationSequence(
         return false;
     }
 
-    USequencerAbstractionBPLibrary::OpenLevelSequenceInSequencer(LevelSequence);
-
+    USequencerAbstractionBPLibrary::OpenLevelSequenceInSequencer(SubstitutionRequest.LevelSequence);
+    // TODO: Do not hardcode the target package path, make it a parameter or generate it based on the original animation sequence
     FString TargetPackagePath = TEXT("/Game/Animations/BlendingAutomation");
     // TODO: name: originalbase_label_baked, get the name of the original animation sequence and append the label to it
-    FString NewAssetName = FString::Printf(TEXT("%s_Baked"), *Label);
+    FString NewAssetName = FString::Printf(TEXT("%s_Baked"), *SubstitutionRequest.Label);
     FSequenceOpenResult BakeResultError;
 
     // Bake new animation into new animation fbx
-    bool bBakeSuccess = USequencerAbstractionBPLibrary::BakeBindingToAnimSequence(LevelSequence, WorldContextObject, SkeletalMeshBindingId, TargetPackagePath, NewAssetName, BakeResultError);
+    bool bBakeSuccess = USequencerAbstractionBPLibrary::BakeBindingToAnimSequence(SubstitutionRequest.LevelSequence, WorldContextObject, SubstitutionContext.SkeletalMeshBindingId, TargetPackagePath, NewAssetName, BakeResultError);
 
     if (!bBakeSuccess)
     {
@@ -83,30 +83,24 @@ static FString FrameTimeToSrtTimestamp(FFrameTime FrameTime, FFrameRate FrameRat
     return FString::Printf(TEXT("%02d:%02d:%02d,%03d"), Hours, Minutes, Seconds, Milliseconds);
 }
 
-bool FBlendingAutomationExporter::ExportMarkersToSrt(ULevelSequence* LevelSequence, 
+bool FBlendingAutomationExporter::ExportMarkersToSrt(
+    const FSubstitutionContext& Context, 
     const FString& OutputSrtFilePath)
 {
-    if (!LevelSequence)
-    {
-        UE_LOG(LogBlendingAuto, Error, TEXT("ExportMarkersToSrt: LevelSequence is null."));
-        return false;
-    }
-
-    UMovieScene* MovieScene = LevelSequence->GetMovieScene();
-    if (!MovieScene)
+    if (!Context.MovieScene)
     {
         UE_LOG(LogBlendingAuto, Error, TEXT("ExportMarkersToSrt: MovieScene is null."));
         return false;
     }
 
-    const TArray<FMovieSceneMarkedFrame>& MarkedFrames = MovieScene->GetMarkedFrames();
+    const TArray<FMovieSceneMarkedFrame>& MarkedFrames = Context.MovieScene->GetMarkedFrames();
     if (MarkedFrames.Num() == 0)
     {
         UE_LOG(LogBlendingAuto, Warning, TEXT("ExportMarkersToSrt: No marked frames found in Level Sequence."));
         return false;
     }
 
-    FFrameRate TickResolution = MovieScene->GetTickResolution();
+    FFrameRate TickResolution = Context.MovieScene->GetTickResolution();
     FString SrtContent = TEXT("");
     int32 SrtIndex = 1;
 

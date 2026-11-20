@@ -1,22 +1,24 @@
 /**
  * BlendingAutomationTypes.h
- * 
- * Defines the data structures used for blending pipeline 
- * for the substitution request and the context passed 
- * through the stages of the pipeline.
+ *
+ * Defines the core data structures passed through the blending automation pipeline:
+ *   - FSubstitutionRequest: Immutable input parameters provided by the caller/Blueprint.
+ *   - FSubstitutionContext: Mutable runtime state shared across pipeline stages.
  */
+
 #pragma once
 
 #include "CoreMinimal.h"
-#include "MovieScene.h"
-#include "LevelSequence.h"
-#include "Animation/Skeleton.h"
 #include "Animation/AnimSequence.h"
+#include "Animation/Skeleton.h"
 #include "Components/SkeletalMeshComponent.h"
-#include "Tracks/MovieSceneSkeletalAnimationTrack.h"
+#include "LevelSequence.h"
+#include "MovieScene.h"
 #include "Sections/MovieSceneSkeletalAnimationSection.h"
-#include "SequencerAbstractionBPLibrary.h"
+#include "Tracks/MovieSceneSkeletalAnimationTrack.h"
+
 #include "MocapImportSubsystem.h"
+#include "SequencerAbstractionBPLibrary.h"
 #include "BlendingAutomationTypes.generated.h"
 
 // TODO: in file SkeletalSequenceDataAsset.h? with blending offsets and hardcoded names and filepaths.
@@ -25,46 +27,57 @@ struct FSubstitutionRequest
 {
     GENERATED_BODY()
 
-    UPROPERTY(EditAnywhere, BlueprintReadWrite)
+    /** Target Level Sequence in which the animation substitution will be performed. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blending Automation")
     TObjectPtr<ULevelSequence> LevelSequence = nullptr;
 
-    UPROPERTY(EditAnywhere, BlueprintReadWrite)
+    /** File path to the base FBX animation. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blending Automation")
     FString OriginalAnimationPath;
 
-    UPROPERTY(EditAnywhere, BlueprintReadWrite)
+    /** File path to the SRT/VTT marker file defining segment boundaries. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blending Automation")
     FString OriginalAnimationSrtPath;
 
-    UPROPERTY(EditAnywhere, BlueprintReadWrite)
+    /** File path to the replacement (donor) FBX animation. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blending Automation")
     FString DonorAnimationPath;
 
-    UPROPERTY(EditAnywhere, BlueprintReadWrite)
+    /** Destination directory/base path for the exported FBX. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blending Automation")
     FString OutputAnimationPath;
 
-    UPROPERTY(EditAnywhere, BlueprintReadWrite)
+    /** Identifier label applied to the baked asset and exported FBX. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blending Automation")
     FString Label;
 
-    UPROPERTY(EditAnywhere, BlueprintReadWrite)
+    /** Zero-based gloss index specifying which segment to replace. */
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Blending Automation")
     int32 SubIndex = 0;
 };
 
-// Context passed internally through pipeline stages
+
+
+/** Internal runtime context struct populated in Stage 1 and passed across Stages 2–5. */
 struct FSubstitutionContext
 {
+    // --- Target Rig & Sequencer References ---
     USkeleton* TargetSkeleton = nullptr;
     USkeletalMesh* TargetSkeletalMesh = nullptr;
     UMovieScene* MovieScene = nullptr;
-    
-    FFrameRate DisplayRate;
-    FFrameRate TickResolution;
-
-    UAnimSequence* OriginalAnim = nullptr;
-    UAnimSequence* DonorAnim = nullptr;
-    
     UMovieSceneSkeletalAnimationTrack* Track = nullptr;
     FGuid SkeletalMeshBindingId;
 
-    UMocapImportSubsystem* MocapSubsystem = nullptr;
-    
-    TMap<int32, FSectionLabelEntry> MarkerSectionMap;
+    // --- Sequence Timing ---
+    FFrameRate DisplayRate;
+    FFrameRate TickResolution;
 
+    // --- Imported Animation Assets ---
+    UAnimSequence* OriginalAnim = nullptr;
+    UAnimSequence* DonorAnim = nullptr;
+
+    // --- Editor Subsystems & Timeline Mapping ---
+    UMocapImportSubsystem* MocapSubsystem = nullptr;
+    TMap<int32, FSectionLabelEntry> MarkerSectionMap;
+    TArray<FMovieSceneMarkedFrame> PlacedMarkers;
 };

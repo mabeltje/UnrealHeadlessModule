@@ -1,21 +1,28 @@
+/**
+ * BlendingAutomationBlender.cpp
+ *
+ * Implements Stage 4 of the blending automation pipeline:
+ *   1. Position donor and tail sections with display-frame transition offsets.
+ *   2. Match pelvis bone transforms across section cuts to prevent root/hip pops.
+ *   3. Fit the Level Sequence playback range to the resulting timeline bounds.
+ */
+
 #include "BlendingAutomationBlender.h"
-#include "../BlendingAutomationBFL.h"
+
 #include "Editor.h"
 #include "UObject/UObjectIterator.h"
+
+#include "../BlendingAutomationBFL.h"
 #include "SequencerAbstractionBPLibrary.h"
 
 
 bool FBlendingAutomationBlender::BlendAnimationSectionsAndMatchToBone(
-    ULevelSequence* LevelSequence,
-    UMovieScene* MovieScene,
-    FFrameRate DisplayRate,
-    TMap<int32, FSectionLabelEntry>& MarkerSectionMap,
-    int32 SubIndex,
-    USkeletalMesh* TargetSkeletalMesh
-)
+    FSubstitutionContext& SubstitutionContext,
+    const FSubstitutionRequest& SubstitutionRequest)
 { 
     // Move the sections to blend together 
-    bool bBlendSuccess = BlendAnimationSections(LevelSequence, MovieScene, DisplayRate, MarkerSectionMap, 1);
+    // TODO: This is a temporary solution, we should implement a more robust method to determine the section index based on the label or other criteria
+    bool bBlendSuccess = BlendAnimationSections(SubstitutionContext, SubstitutionRequest, 1);
     if (!bBlendSuccess)
     {
         UE_LOG(LogBlendingAuto, Warning, TEXT("Failed to blend animation sections."));
@@ -23,7 +30,7 @@ bool FBlendingAutomationBlender::BlendAnimationSectionsAndMatchToBone(
     }
 
     // Lock hips to avoid shifts between section
-    bool bBoneMatchSuccess = MatchSectionsToBone(LevelSequence, MovieScene, DisplayRate, MarkerSectionMap, 1, TargetSkeletalMesh);
+    bool bBoneMatchSuccess = MatchSectionsToBone(SubstitutionContext, SubstitutionRequest, 1);
     if (!bBoneMatchSuccess)
     {
         UE_LOG(LogBlendingAuto, Warning, TEXT("Failed to match sections to bone."));
@@ -31,17 +38,17 @@ bool FBlendingAutomationBlender::BlendAnimationSectionsAndMatchToBone(
     }
 
     // Set the playback range for the level sequence correctly
-    int32 StartFrame = MarkerSectionMap[0].Section->GetRange().GetLowerBoundValue().Value;
-    int32 EndFrame = MarkerSectionMap[MarkerSectionMap.Num() - 1].Section->GetRange().GetUpperBoundValue().Value;
+    int32 StartFrame = SubstitutionContext.MarkerSectionMap[0].Section->GetRange().GetLowerBoundValue().Value;
+    int32 EndFrame = SubstitutionContext.MarkerSectionMap[SubstitutionContext.MarkerSectionMap.Num() - 1].Section->GetRange().GetUpperBoundValue().Value;
 
     // Convert to display rate
-    FFrameTime StartDisplayTime = FFrameRate::TransformTime(FFrameTime(StartFrame), MovieScene->GetTickResolution(), DisplayRate);
-    FFrameTime EndDisplayTime = FFrameRate::TransformTime(FFrameTime(EndFrame), MovieScene->GetTickResolution(), DisplayRate);
+    FFrameTime StartDisplayTime = FFrameRate::TransformTime(FFrameTime(StartFrame), SubstitutionContext.MovieScene->GetTickResolution(), SubstitutionContext.DisplayRate);
+    FFrameTime EndDisplayTime = FFrameRate::TransformTime(FFrameTime(EndFrame), SubstitutionContext.MovieScene->GetTickResolution(), SubstitutionContext.DisplayRate);
 
     int32 StartDisplayFrame = StartDisplayTime.FloorToFrame().Value;
     int32 EndDisplayFrame = EndDisplayTime.FloorToFrame().Value;
 
-    bool bSetPlaybackRangeSuccess = USequencerAbstractionBPLibrary::SetSequencePlaybackRange(LevelSequence, StartDisplayFrame, EndDisplayFrame);
+    bool bSetPlaybackRangeSuccess = USequencerAbstractionBPLibrary::SetSequencePlaybackRange(SubstitutionRequest.LevelSequence, StartDisplayFrame, EndDisplayFrame);
     if (!bSetPlaybackRangeSuccess)
     {
         UE_LOG(LogBlendingAuto, Warning, TEXT("Failed to set playback range for the level sequence."));
@@ -50,19 +57,18 @@ bool FBlendingAutomationBlender::BlendAnimationSectionsAndMatchToBone(
     return true;
 }
 
+
 bool FBlendingAutomationBlender::BlendAnimationSections(
-    ULevelSequence* LevelSequence,
-    UMovieScene* MovieScene,
-    FFrameRate DisplayRate,
-    TMap<int32, FSectionLabelEntry>& MarkerSectionMap,
+    FSubstitutionContext& SubstitutionContext,
+    const FSubstitutionRequest& SubstitutionRequest,
     int32 SectionIndex)
 {   
+    // TODO: Do not hardcode this here
     int32 OverlapPercentage = 20; // percentage of overlap between sections
-    FFrameRate TickResolution = MovieScene->GetTickResolution();
 
-    FSectionLabelEntry* HeadEntry = MarkerSectionMap.Find(SectionIndex - 1);
-    FSectionLabelEntry* NewEntry = MarkerSectionMap.Find(SectionIndex);
-    FSectionLabelEntry* TailEntry = MarkerSectionMap.Find(SectionIndex + 1);
+    FSectionLabelEntry* HeadEntry = SubstitutionContext.MarkerSectionMap.Find(SectionIndex - 1);
+    FSectionLabelEntry* NewEntry = SubstitutionContext.MarkerSectionMap.Find(SectionIndex);
+    FSectionLabelEntry* TailEntry = SubstitutionContext.MarkerSectionMap.Find(SectionIndex + 1);
 
     if (!HeadEntry || !NewEntry || !TailEntry)
     {
@@ -88,7 +94,7 @@ bool FBlendingAutomationBlender::BlendAnimationSections(
     int32 NewStartFrame = HeadEndTime.FloorToFrame().Value - OverlapFrames;
 
     // Convert to the display rate
-    FFrameTime NewStartDisplayTime = FFrameRate::TransformTime(FFrameTime(NewStartFrame), MovieScene->GetTickResolution(), DisplayRate);
+    FFrameTime NewStartDisplayTime = FFrameRate::TransformTime(FFrameTime(NewStartFrame), SubstitutionContext.TickResolution, SubstitutionContext.DisplayRate);
     int32 NewStartDisplayFrame = NewStartDisplayTime.FloorToFrame().Value;
 
     // // Move the new section to the new start frame (passing int32 frame)
@@ -102,15 +108,16 @@ bool FBlendingAutomationBlender::BlendAnimationSections(
 
     // Calculate frametime HeadEndTime + 10
     // 1. Define the offset in display frames
+    // TODO: Temp solution, fix this
     int32 DisplayFrameOffset = 10;
 
     // 2. Transform HeadEndTime to Display Rate, then add 10 display frames
-    FFrameTime HeadEndDisplayTime = FFrameRate::TransformTime(HeadEndTime, TickResolution, DisplayRate);
+    FFrameTime HeadEndDisplayTime = FFrameRate::TransformTime(HeadEndTime, SubstitutionContext.TickResolution, SubstitutionContext.DisplayRate);
     int32 NewStartFrameOffset = HeadEndDisplayTime.FloorToFrame().Value + DisplayFrameOffset;
 
     // Move the new section to the new start frame (passing int32 frame)
     FSequenceOpenResult Result;
-    bool bMoveSuccessNew = USequencerAbstractionBPLibrary::MoveAnimationSectionStartTo(LevelSequence, NewSection, NewStartFrameOffset, Result);
+    bool bMoveSuccessNew = USequencerAbstractionBPLibrary::MoveAnimationSectionStartTo(SubstitutionRequest.LevelSequence, NewSection, NewStartFrameOffset, Result);
     if (!bMoveSuccessNew)
     {
         UE_LOG(LogBlendingAuto, Warning, TEXT("Failed to move new section to start frame %d: %s"), NewStartFrameOffset, *Result.Error);
@@ -125,7 +132,7 @@ bool FBlendingAutomationBlender::BlendAnimationSections(
     FFrameTime NewStartFrameTail = TailStartTime - FFrameTime(OverlapFrames) - LengthBetweenSections;
 
     // Convert to the display rate
-    FFrameTime NewStartDisplayTimeTail = FFrameRate::TransformTime(FFrameTime(NewStartFrameTail), MovieScene->GetTickResolution(), DisplayRate);
+    FFrameTime NewStartDisplayTimeTail = FFrameRate::TransformTime(FFrameTime(NewStartFrameTail), SubstitutionContext.TickResolution, SubstitutionContext.DisplayRate);
     int32 NewStartDisplayFrameTail = NewStartDisplayTimeTail.FloorToFrame().Value;
 
     // // Move the tail section to the new start frame
@@ -138,7 +145,7 @@ bool FBlendingAutomationBlender::BlendAnimationSections(
     // }
 
     // Transform NewSectionEndTime to Display Rate before adding the offset
-    FFrameTime NewSectionEndDisplayTime = FFrameRate::TransformTime(NewSectionEndTime, TickResolution, DisplayRate);
+    FFrameTime NewSectionEndDisplayTime = FFrameRate::TransformTime(NewSectionEndTime, SubstitutionContext.TickResolution, SubstitutionContext.DisplayRate);
     int32 NewEndFrame = NewSectionEndDisplayTime.FloorToFrame().Value + DisplayFrameOffset;
     
 
@@ -146,7 +153,7 @@ bool FBlendingAutomationBlender::BlendAnimationSections(
 
     // Move the tail section to the new start frame
     FSequenceOpenResult MoveResult;
-    bool bMoveSuccessTail = USequencerAbstractionBPLibrary::MoveAnimationSectionStartTo(LevelSequence, TailSection, NewEndFrame, MoveResult);
+    bool bMoveSuccessTail = USequencerAbstractionBPLibrary::MoveAnimationSectionStartTo(SubstitutionRequest.LevelSequence, TailSection, NewEndFrame, MoveResult);
     if (!bMoveSuccessTail)
     {
         UE_LOG(LogBlendingAuto, Warning, TEXT("Failed to move section %s to start frame %d: %s"), *TailSection->GetName(), NewEndFrame, *MoveResult.Error);
@@ -154,24 +161,22 @@ bool FBlendingAutomationBlender::BlendAnimationSections(
     }
 
     // Mark the sequence as changed so the modification can be saved
-    MovieScene->MarkAsChanged();
+    SubstitutionContext.MovieScene->MarkAsChanged();
 
     return true;
 }
 
+
 bool FBlendingAutomationBlender::MatchSectionsToBone(
-        ULevelSequence* LevelSequence,
-        UMovieScene* MovieScene,
-        FFrameRate DisplayRate,
-        TMap<int32, FSectionLabelEntry>& MarkerSectionMap,
-        int32 SectionIndex,
-        USkeletalMesh* TargetSkeletalMesh
+    FSubstitutionContext& SubstitutionContext,
+    const FSubstitutionRequest& SubstitutionRequest,
+        int32 SectionIndex
     )
 {   
     // Match the sections to the bone before subindex
-    for (int32 i = SectionIndex; i < MarkerSectionMap.Num(); i++)
+    for (int32 i = SectionIndex; i < SubstitutionContext.MarkerSectionMap.Num(); i++)
     {
-        FSectionLabelEntry* CurrentEntry = MarkerSectionMap.Find(i);
+        FSectionLabelEntry* CurrentEntry = SubstitutionContext.MarkerSectionMap.Find(i);
         if (!CurrentEntry)
         {
             UE_LOG(LogBlendingAuto, Warning, TEXT("Could not find entry for SubIndex %d in MarkerSectionMap."), i);
@@ -189,14 +194,14 @@ bool FBlendingAutomationBlender::MatchSectionsToBone(
         FFrameTime CurrentStartTime = CurrentSection->GetRange().GetLowerBoundValue();
         USkeletalMeshComponent* TargetComponent = nullptr;
 
-        if (TargetSkeletalMesh && GEditor)
+        if (SubstitutionContext.TargetSkeletalMesh && GEditor)
         {
             UWorld* EditorWorld = GEditor->GetEditorWorldContext().World();
 
             for (TObjectIterator<USkeletalMeshComponent> It; It; ++It)
             {
                 // Check if the component belongs to the current editor world and uses the mesh
-                if (It->GetWorld() == EditorWorld && It->GetSkeletalMeshAsset() == TargetSkeletalMesh)
+                if (It->GetWorld() == EditorWorld && It->GetSkeletalMeshAsset() == SubstitutionContext.TargetSkeletalMesh)
                 {
                     TargetComponent = *It;
                     break;
@@ -211,10 +216,10 @@ bool FBlendingAutomationBlender::MatchSectionsToBone(
         }
 
         // Move the sequencer playhead to the start time of the current section
-        FFrameTime DisplayTime = FFrameRate::TransformTime(CurrentStartTime, MovieScene->GetTickResolution(), DisplayRate);
+        FFrameTime DisplayTime = FFrameRate::TransformTime(CurrentStartTime, SubstitutionContext.TickResolution, SubstitutionContext.DisplayRate);
         USequencerAbstractionBPLibrary::moveSequencerPlayheadToFrame(DisplayTime.FloorToFrame().Value);
 
-        USectionAbstraction::MatchSectionByBone(CurrentSection, TargetComponent, CurrentStartTime, MovieScene->GetTickResolution(), "pelvis");
+        USectionAbstraction::MatchSectionByBone(CurrentSection, TargetComponent, CurrentStartTime, SubstitutionContext.TickResolution, "pelvis");
     }
 
     return true;

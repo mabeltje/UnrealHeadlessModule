@@ -1,37 +1,32 @@
 /**
  * BlendingAutomationBFL.cpp
  *
- * The main file for the blending automation pipeline.
- * It consists of the main logic for processing animation substitutions.
- * There are 5 stages in the pipeline:
- * 1. Load and Validate: Load the original and donor animations, validate the data, and prepare the data structures.
- * 2. Place Markers and Split Sections: Parse the markers from the original animation's srt file, place them in the level sequence, and split the animation sections accordingly.
- * 3. Remove Section and Add Donor Animation: Remove the original animation section and add the donor animation section to the level sequence.
- * 4. Blend Sections and Match to Bone: Generate yhe new transitions and match the pelvis to avoid shifts between sections.
- * 5. Bake and Save: Bake the final blended animation sequence to a new asset and save it.
+ * Manages the 5-stage animation substitution and blending automation pipeline:
+ *   1. Load & Validate       - Validate inputs, load config/FBX assets, and reset the sequence.
+ *   2. Place Markers & Split - Parse SRT/VTT markers and split the base animation into segments.
+ *   3. Replace Section       - Remove the target segment, shift tail sections, and insert donor anim.
+ *   4. Blend & Match Bone    - Overlap transitions and align pelvis transforms across cuts.
+ *   5. Bake & Export         - Bake the blended sequence to a UAnimSequence asset and export FBX.
  */
 
+#include "BlendingAutomationBFL.h"
+
+#include "Animation/AnimSequence.h"
+#include "Animation/Skeleton.h"
+#include "Editor.h"
+#include "Misc/Paths.h"
 #include "MovieScene.h"
 #include "MovieSceneSection.h"
-#include "Tracks/MovieSceneSkeletalAnimationTrack.h"
 #include "Sections/MovieSceneSkeletalAnimationSection.h"
-#include "Animation/Skeleton.h"
-#include "Animation/AnimSequence.h"
-#include "Editor.h"
-#include "SkeletalSequenceDataAsset.h"
-#include "Misc/FileHelper.h"
-#include "Misc/Paths.h"
+#include "Tracks/MovieSceneSkeletalAnimationTrack.h"
 
-#include "VTTParser.h"
-#include "BlendingAutomationBFL.h"
-#include "SequencerAbstractionBPLibrary.h"
 #include "AnimationExport.h"
 #include "MocapImportSubsystem.h"
-
+#include "SequencerAbstractionBPLibrary.h"
+#include "SkeletalSequenceDataAsset.h"
 #include "Subsystems/BlendingAutomationBlender.h"
 #include "Subsystems/BlendingAutomationExporter.h"
 #include "Subsystems/BlendingAutomationSplitter.h"
-
 
 DEFINE_LOG_CATEGORY(LogBlendingAuto);
 
@@ -50,76 +45,62 @@ bool UBlendingAutomationBFL::ProcessAnimationSubstitution(
     UE_LOG(LogBlendingAuto, Display, TEXT("   Donor:    %s"), *DonorAnimationPath);
 
     // TODO: have a folder that is wiped after every substitution, with for example the baked control rig data or the imported trimmed fbx
+    OutNewAnimation = nullptr;
+    
+    // Create the substitution context and request structures
+    FSubstitutionContext SubstitutionContext;
+    FSubstitutionRequest SubstitutionRequest;
     
     // --- Stage 1: Load and Validate ---
-    OutNewAnimation = nullptr;
-    USkeleton* TargetSkeleton = nullptr;
-    USkeletalMesh* TargetSkeletalMesh = nullptr;
-    UMovieScene* MovieScene = nullptr;
-    FFrameRate DisplayRate;
-    FFrameRate TickResolution;
-    UAnimSequence* OriginalAnim = nullptr;
-    UAnimSequence* DonorAnim = nullptr;
-    UMocapImportSubsystem* MocapSubsystem = nullptr;
-    UMovieSceneSkeletalAnimationTrack* Track = nullptr;
-    FGuid SkeletalMeshBindingId;
-    TMap<int32, FSectionLabelEntry> MarkerSectionMap;
-
-    
-
-    if (!LoadAndValidate(
-            LevelSequence, OriginalAnimationPath, OriginalAnimationSrtPath, DonorAnimationPath, Label, SubIndex,
-            TargetSkeleton, TargetSkeletalMesh, MovieScene, DisplayRate, TickResolution,
-            OriginalAnim, DonorAnim, MocapSubsystem, Track, SkeletalMeshBindingId))
+    UE_LOG(LogBlendingAuto, Display, TEXT("     [1/5] Loading & Validating assets..."));
+    if (!LoadAndValidate(LevelSequence, OriginalAnimationPath, OriginalAnimationSrtPath, 
+        DonorAnimationPath, OutputAnimationPath, Label, SubIndex, 
+        SubstitutionContext, SubstitutionRequest))
     {
         return false;
     }
-    UE_LOG(LogBlendingAuto, Display, TEXT("     [1/5] Loading & Validating assets..."));
 
     // --- Stage 2: Place Markers and Split Sections ---
-    if (!FBlendingAutomationSplitter::PlaceMarkersAndSplit(LevelSequence, MovieScene, DisplayRate, OriginalAnimationSrtPath, OriginalAnim, SkeletalMeshBindingId, SubIndex, Label, MarkerSectionMap))
+    UE_LOG(LogBlendingAuto, Display, TEXT("     [2/5] Parsing markers & splitting timeline..."));
+    if (!FBlendingAutomationSplitter::PlaceMarkersAndSplit(SubstitutionContext, SubstitutionRequest))
     {
         return false;
     }
-    UE_LOG(LogBlendingAuto, Display, TEXT("     [2/5] Parsing markers & splitting timeline..."));
 
     // --- Stage 3: Remove Section and Add Donor Animation ---
-    if (!ReplaceSection(LevelSequence, MovieScene, DisplayRate, MarkerSectionMap, Track, DonorAnim, SubIndex, Label))
+    UE_LOG(LogBlendingAuto, Display, TEXT("     [3/5] Replacing section with donor animation..."));
+    if (!ReplaceSection(SubstitutionRequest, SubstitutionContext))
     {
         return false;
     }
-    UE_LOG(LogBlendingAuto, Display, TEXT("     [3/5] Replacing section with donor animation..."));
 
     // --- Stage 4: Blend Sections and Match to Bone ---
-    if (!FBlendingAutomationBlender::BlendAnimationSectionsAndMatchToBone(LevelSequence, MovieScene, DisplayRate, MarkerSectionMap, SubIndex, TargetSkeletalMesh))
+    UE_LOG(LogBlendingAuto, Display, TEXT("     [4/5] Blending overlaps & matching pelvis bone transforms..."));
+    if (!FBlendingAutomationBlender::BlendAnimationSectionsAndMatchToBone(SubstitutionContext, SubstitutionRequest))
     {
         return false;
     }
-    UE_LOG(LogBlendingAuto, Display, TEXT("     [4/5] Blending overlaps & matching pelvis bone transforms..."));
 
     // --- Stage 5: Bake and Save ---
-    if (!FBlendingAutomationExporter::BakeAnimationSequence(LevelSequence, MovieScene, SkeletalMeshBindingId, Label))
+    UE_LOG(LogBlendingAuto, Display, TEXT("     [5/5] Baking final sequence to asset..."));
+    if (!FBlendingAutomationExporter::BakeAnimationSequence(SubstitutionContext, SubstitutionRequest))
     {
         UE_LOG(LogBlendingAuto, Warning, TEXT("Failed to bake animation sequence."));
         return false;
     }
-    UE_LOG(LogBlendingAuto, Display, TEXT("     [5/5] Baking final sequence to asset..."));
 
-    FString BakedAssetPath = FString::Printf(TEXT("/Game/Animations/BlendingAutomation/%s_Baked.%s_Baked"), *Label, *Label);
+    // Load the baked animation sequence asset
+    // TODO: Do not hardcode the path, make it a parameter or generate it based on the original animation sequence
+    FString BakedAssetPath = FString::Printf(TEXT("/Game/Animations/BlendingAutomation/%s_Baked.%s_Baked"), *SubstitutionRequest.Label, *SubstitutionRequest.Label);
     OutNewAnimation = LoadObject<UAnimSequence>(nullptr, *BakedAssetPath);
     
     USequencerAbstractionBPLibrary::SaveAsset(LevelSequence);
 
-    // 1. Get the folder of the original animation FBX
+    // Export final baked animation to FBX
     FString CleanExportDir = FPaths::ConvertRelativePathToFull(OutputAnimationPath);
-
-    // get the last part of the output path to use in the name
     FString ExportFileNameBase = FPaths::GetBaseFilename(OutputAnimationPath);
-
-    // 2. Set export file name (e.g. "OPA_baked")
     FString ExportFileName = FString::Printf(TEXT("%s_%s"), *ExportFileNameBase, *Label);
 
-    // 3. Export FBX
     FAnimExportResult ExportResult = UAnimationExport::exportAnimationToFbx(
         BakedAssetPath,
         CleanExportDir,
@@ -135,11 +116,15 @@ bool UBlendingAutomationBFL::ProcessAnimationSubstitution(
         UE_LOG(LogBlendingAuto, Error, TEXT("Failed to export FBX: %s"), *ExportResult.message);
     }
 
-    UE_LOG(LogBlendingAuto, Display, TEXT("[Substitution Done] Successfully completed substitution for '%s'."), *Label);
-    UE_LOG(LogBlendingAuto, Display, TEXT(""));
+    UE_LOG(LogBlendingAuto, Display, TEXT("[Substitution Done] Successfully completed substitution for '%s'.\n"), *SubstitutionRequest.Label);
 
     return (OutNewAnimation != nullptr);
 }
+
+
+// =============================================================================
+// Pipeline Stages
+// =============================================================================
 
 // Stage 1: Load and Validate
 bool UBlendingAutomationBFL::LoadAndValidate(
@@ -147,27 +132,14 @@ bool UBlendingAutomationBFL::LoadAndValidate(
     const FString& OriginalAnimationPath,
     const FString& OriginalAnimationSrtPath,
     const FString& DonorAnimationPath,
+    const FString& OutputAnimationPath,
     const FString& Label,
     int32 SubIndex,
-    FSubstitutionContext*& OutSubstitutionContext,
-    FSubstitutionRequest*& OutSubstitutionRequest,
-    USkeleton*& OutSkeleton,
-    USkeletalMesh*& OutMesh,
-    UMovieScene*& OutMovieScene,
-    FFrameRate& OutDisplayRate,
-    FFrameRate& OutTickResolution,
-    UAnimSequence*& OutOriginalAnim,
-    UAnimSequence*& OutDonorAnim,
-    UMocapImportSubsystem*& OutMocapSubsystem,
-    UMovieSceneSkeletalAnimationTrack*& OutTrack,
-    FGuid& OutSkeletalMeshBindingId
+    FSubstitutionContext& SubstitutionContext,
+    FSubstitutionRequest& SubstitutionRequest
 )
 {  
-    // Create the substitution context and request structures
-    FSubstitutionContext SubstitutionContext;
-    FSubstitutionRequest SubstitutionRequest;
-
-    // Populate the substitution request with the input parameters
+    // Populate the SubstitutionRequest struct
     SubstitutionRequest.LevelSequence = LevelSequence;
     SubstitutionRequest.OriginalAnimationPath = OriginalAnimationPath;
     SubstitutionRequest.OriginalAnimationSrtPath = OriginalAnimationSrtPath;
@@ -182,7 +154,8 @@ bool UBlendingAutomationBFL::LoadAndValidate(
         return false;
     }
 
-    // Load config
+    // Load the Config
+    // TODO: Do not hardcode the path, make it a parameter or generate it based on the original animation sequence
     USkeletalSequenceDataAsset* SkeletalSequenceDataAsset = LoadObject<USkeletalSequenceDataAsset>(nullptr, TEXT("/Game/Config/AutomationConfig.AutomationConfig"));
     if (!SkeletalSequenceDataAsset)
     {
@@ -199,7 +172,7 @@ bool UBlendingAutomationBFL::LoadAndValidate(
         return false;
     }
     
-    // Subsystem
+    // Acquire editor import subsystem
     SubstitutionContext.MocapSubsystem = GEditor->GetEditorSubsystem<UMocapImportSubsystem>();
     if (!SubstitutionContext.MocapSubsystem)
     {
@@ -217,6 +190,7 @@ bool UBlendingAutomationBFL::LoadAndValidate(
     SubstitutionContext.DisplayRate = SubstitutionContext.MovieScene->GetDisplayRate();
     SubstitutionContext.TickResolution = SubstitutionContext.MovieScene->GetTickResolution();
 
+    // Load the original and donor animation sequences
     if (!LoadAnimSequence(SubstitutionContext.MocapSubsystem, SubstitutionRequest.OriginalAnimationPath, SubstitutionContext.TargetSkeleton, SubstitutionContext.OriginalAnim))
     {
         UE_LOG(LogBlendingAuto, Error, TEXT("Failed to import original animation: %s"), *SubstitutionRequest.OriginalAnimationPath);
@@ -229,12 +203,19 @@ bool UBlendingAutomationBFL::LoadAndValidate(
         return false;
     }
 
+    // Store the output animation path in the substitution request for later use
+    SubstitutionRequest.OutputAnimationPath = OutputAnimationPath;
+
     // Get the binding guid for the skeletal mesh track
     TArray<UMovieSceneSkeletalAnimationTrack*> OutTracks;
     FindAllTracks(SubstitutionContext.MovieScene, OutTracks);
     if (OutTracks.Num() > 0)
     {
         SubstitutionContext.MovieScene->FindTrackBinding(*OutTracks[0], SubstitutionContext.SkeletalMeshBindingId);
+    } else
+    {
+        UE_LOG(LogBlendingAuto, Error, TEXT("No skeletal animation tracks found in the MovieScene."));
+        return false;
     }
 
     // Save the track
@@ -246,7 +227,7 @@ bool UBlendingAutomationBFL::LoadAndValidate(
         return false;
     }
 
-    // Reset the level sequence to remove all existing tracks and markers
+    // Clear existing sections and markers from the level sequence to prepare for the substitution process
     bool bResetSuccess = ResetLevelSequence(LevelSequence, SubstitutionContext.MovieScene, FGuid());
     if (!bResetSuccess)
     {
@@ -259,40 +240,165 @@ bool UBlendingAutomationBFL::LoadAndValidate(
 
 // Stage 3: Remove Section and Add Donor Animation
 bool UBlendingAutomationBFL::ReplaceSection(
-    ULevelSequence* LevelSequence,
-    UMovieScene* MovieScene,
-    FFrameRate DisplayRate,
-    TMap<int32, FSectionLabelEntry>& MarkerSectionMap,
-    UMovieSceneSkeletalAnimationTrack* Track, 
-    UAnimSequence* donorAnimSequence,
-    int32 SubIndex,
-    const FString& Label
-)
-{
-    // Hardcode the SectionIndex to the SectionIndex, because we now only split the animation in 3 sections
+    const FSubstitutionRequest& SubstitutionRequest,
+    FSubstitutionContext& SubstitutionContext)
+{   
+    // The timeline is always split into 3 segments [Head (0), Target (1), Tail (2)]
+    // TODO: Do not hardcode this, it works for now, because we only sub 1 section at a time
+    // but if we want to sub multiple sections, we need to find the section index based
     int32 SectionIndex = 1;
 
-    // Remove a section from the level sequence
-    bool bRemoveSuccess = RemoveSectionFromLevelSequence(LevelSequence, MovieScene, SectionIndex, MarkerSectionMap, DisplayRate);
-    if (!bRemoveSuccess)
+    if (!RemoveSectionFromLevelSequence(SubstitutionRequest.LevelSequence, SubstitutionContext.MovieScene, SectionIndex, SubstitutionContext.MarkerSectionMap, SubstitutionContext.DisplayRate))
     {
         UE_LOG(LogBlendingAuto, Warning, TEXT("Failed to remove section from level sequence."));
         return false;
     }
 
-    // First move the tail section to fit the new section, otherwise the new section will be placed on new track
-    bool bMoveSuccess = FitTailSections(LevelSequence, MovieScene, DisplayRate, MarkerSectionMap, SectionIndex, donorAnimSequence);
-    if (!bMoveSuccess)
+    // Adjust the tail sections to fit the new section
+    // TODO: Do not hardcode this, it works for now, because we only sub 1 section at a time
+    // but if we want to sub multiple sections, we need to find the section index based
+    // there is also no guarantee that the new section will always fit
+    if (!FitTailSections(SubstitutionRequest.LevelSequence, SubstitutionContext.MovieScene, SubstitutionContext.DisplayRate, SubstitutionContext.MarkerSectionMap, SectionIndex, SubstitutionContext.DonorAnim))
     {
         UE_LOG(LogBlendingAuto, Warning, TEXT("Failed to move tail sections to fit the new section."));
         return false;
     }
 
     // Add the donor animation section to the level sequence
-    bool AddSuccess = AddDonorAnimationSection(LevelSequence, MovieScene, DisplayRate, MarkerSectionMap, Track, donorAnimSequence, SectionIndex, Label);
-    if (!AddSuccess)
+    if (!AddDonorAnimationSection(SubstitutionRequest.LevelSequence, SubstitutionContext.MovieScene, SubstitutionContext.DisplayRate, SubstitutionContext.MarkerSectionMap, SubstitutionContext.Track, SubstitutionContext.DonorAnim, SectionIndex, SubstitutionRequest.Label))
     {
         UE_LOG(LogBlendingAuto, Warning, TEXT("Failed to add donor animation section to the level sequence."));
+        return false;
+    }
+
+    return true;
+}
+
+
+// =============================================================================
+// Validation & Asset Loading Helpers
+// =============================================================================
+
+bool UBlendingAutomationBFL::ValidateInputParameters(
+    const FSubstitutionRequest& SubstitutionRequest)
+{
+    if (!SubstitutionRequest.LevelSequence)                  { UE_LOG(LogBlendingAuto, Error, TEXT("LevelSequence is null.")); return false; }
+    if (SubstitutionRequest.OriginalAnimationPath.IsEmpty())   { UE_LOG(LogBlendingAuto, Error, TEXT("OriginalAnimationPath is empty.")); return false; }
+    if (SubstitutionRequest.OriginalAnimationSrtPath.IsEmpty()){ UE_LOG(LogBlendingAuto, Error, TEXT("OriginalAnimationSrtPath is empty.")); return false; }
+    if (SubstitutionRequest.DonorAnimationPath.IsEmpty())      { UE_LOG(LogBlendingAuto, Error, TEXT("DonorAnimationPath is empty.")); return false; }
+    if (SubstitutionRequest.Label.IsEmpty())                  { UE_LOG(LogBlendingAuto, Error, TEXT("Label is empty.")); return false; }
+    if (SubstitutionRequest.SubIndex < 0)                     { UE_LOG(LogBlendingAuto, Error, TEXT("SubIndex is negative.")); return false; }
+
+    return true;
+}
+
+
+bool UBlendingAutomationBFL::LoadAnimSequence(UMocapImportSubsystem* MocapSubsystem, 
+    const FString& AnimationPath, 
+    USkeleton* TargetSkeleton, 
+    UAnimSequence*& OutAnimSequence) {
+    
+    OutAnimSequence = nullptr;
+
+    if (!MocapSubsystem)
+    {
+        UE_LOG(LogBlendingAuto, Error, TEXT("LoadAnimSequence: MocapSubsystem is null."));
+        return false;
+    }
+
+    const FString TargetPath = TEXT("/Game/Animations/BlendingAutomation");
+    FString outFirstImportedAssetPath;
+
+    bool importSuccess = MocapSubsystem->importAnimationFromFbx(
+        AnimationPath,
+        TargetPath,
+        TargetSkeleton,
+        true,
+        outFirstImportedAssetPath
+    );
+
+    if (importSuccess && !outFirstImportedAssetPath.IsEmpty())
+    {
+        OutAnimSequence = LoadObject<UAnimSequence>(nullptr, *outFirstImportedAssetPath);
+    }
+
+    return importSuccess && (OutAnimSequence != nullptr);
+
+}
+
+
+// =============================================================================
+// Sequencer Track & Section Manipulation Helpers
+// =============================================================================
+
+bool UBlendingAutomationBFL::ResetLevelSequence(
+    ULevelSequence* LevelSequence,
+    UMovieScene* MovieScene,
+    FGuid SkeletalMeshBindingId
+)
+{
+    TArray<UMovieSceneSkeletalAnimationSection*> OutSections;
+    bool BfoundSections = FindAllSections(MovieScene, OutSections);
+
+    bool bRemoveSuccess = true;
+    for (UMovieSceneSkeletalAnimationSection* Section : OutSections)
+    {
+        FSequenceOpenResult RemoveResult;
+        bool bSectionRemoved = USectionAbstraction::RemoveAnimationSection(LevelSequence, Section, RemoveResult);
+        if (!bSectionRemoved)
+        {
+            UE_LOG(LogBlendingAuto, Warning, TEXT("Failed to remove animation section: %s"), *RemoveResult.Error);
+            bRemoveSuccess = false;
+        }
+    }
+
+    MovieScene->DeleteMarkedFrames();
+    MovieScene->MarkAsChanged();
+    LevelSequence->MarkPackageDirty();
+
+    return bRemoveSuccess;
+}
+
+
+bool UBlendingAutomationBFL::RemoveSectionFromLevelSequence(
+        ULevelSequence* LevelSequence,
+        UMovieScene* MovieScene,
+        int32 SubIndex,
+        TMap<int32, FSectionLabelEntry>& MarkerSectionMap,
+        FFrameRate DisplayRate
+    )
+{   
+    // Remove section
+    FSectionLabelEntry* FoundEntry = MarkerSectionMap.Find(SubIndex);
+
+    // Print the found entry for debugging
+    if (!FoundEntry)
+    {   
+        UE_LOG(LogBlendingAuto, Warning, TEXT("No entry found for SubIndex %d in MarkerSectionMap."), SubIndex);
+        return false;
+    }
+
+        
+    UMovieSceneSkeletalAnimationSection* SectionToRemove = Cast<UMovieSceneSkeletalAnimationSection>(FoundEntry->Section.Get());
+    
+    // get end frame of the section to remove
+    if (!SectionToRemove)
+    {
+        UE_LOG(LogBlendingAuto, Warning, TEXT("Section to remove is null."));
+        return false;
+    }
+
+    FFrameRate TickResolution = MovieScene->GetTickResolution();
+    FFrameTime SectionEndTime = SectionToRemove->GetRange().GetUpperBoundValue();
+    FFrameTime SectionEndDisplayTime = FFrameRate::TransformTime(SectionEndTime, TickResolution, DisplayRate);
+    int32 SectionEndDisplayFrame = SectionEndDisplayTime.FloorToFrame().Value;
+
+    FSequenceOpenResult RemoveResult;
+    bool bRemoveSuccess = USectionAbstraction::RemoveAnimationSection(LevelSequence, SectionToRemove, RemoveResult);
+
+    if (!bRemoveSuccess)
+    {
+        UE_LOG(LogBlendingAuto, Warning, TEXT("Failed to remove animation section: %s"), *RemoveResult.Error);
         return false;
     }
 
@@ -389,34 +495,6 @@ bool UBlendingAutomationBFL::FitTailSections(ULevelSequence* LevelSequence,
 }
 
 
-bool UBlendingAutomationBFL::ResetLevelSequence(
-    ULevelSequence* LevelSequence,
-    UMovieScene* MovieScene,
-    FGuid SkeletalMeshBindingId
-)
-{
-    TArray<UMovieSceneSkeletalAnimationSection*> OutSections;
-    bool BfoundSections = FindAllSections(MovieScene, OutSections);
-
-    bool bRemoveSuccess = true;
-    for (UMovieSceneSkeletalAnimationSection* Section : OutSections)
-    {
-        FSequenceOpenResult RemoveResult;
-        bool bSectionRemoved = USectionAbstraction::RemoveAnimationSection(LevelSequence, Section, RemoveResult);
-        if (!bSectionRemoved)
-        {
-            UE_LOG(LogBlendingAuto, Warning, TEXT("Failed to remove animation section: %s"), *RemoveResult.Error);
-            bRemoveSuccess = false;
-        }
-    }
-
-    MovieScene->DeleteMarkedFrames();
-    MovieScene->MarkAsChanged();
-    LevelSequence->MarkPackageDirty();
-
-    return bRemoveSuccess;
-}
-
 bool UBlendingAutomationBFL::AddDonorAnimationSection(
     ULevelSequence* LevelSequence,
     UMovieScene* MovieScene,
@@ -471,6 +549,49 @@ bool UBlendingAutomationBFL::AddDonorAnimationSection(
     return true;
 }
 
+
+bool UBlendingAutomationBFL::FindAllTracks(UMovieScene* MovieScene, TArray<UMovieSceneSkeletalAnimationTrack*>& OutTracks) {
+    // Iterate through all object bindings (Actors / Components) in Sequencer
+    const UMovieScene* ConstMovieScene = MovieScene;
+    for (const FMovieSceneBinding& Binding : ConstMovieScene->GetBindings())
+    {
+        for (UMovieSceneTrack* Track : MovieScene->FindTracks(UMovieSceneSkeletalAnimationTrack::StaticClass(), Binding.GetObjectGuid()))
+        {
+            if (Track)
+            {
+                OutTracks.Add(Cast<UMovieSceneSkeletalAnimationTrack>(Track));
+            }
+        }
+    }
+    return true;
+}
+
+
+bool UBlendingAutomationBFL::FindAllSections(UMovieScene* MovieScene, TArray<UMovieSceneSkeletalAnimationSection*>& OutSections) {
+    TArray<UMovieSceneSkeletalAnimationTrack*> Tracks;
+    FindAllTracks(MovieScene, Tracks);
+
+    for (UMovieSceneSkeletalAnimationTrack* Track : Tracks)
+    {
+        if (Track)
+        {
+            for (UMovieSceneSection* Section : Track->GetAllSections())
+            {
+                if (UMovieSceneSkeletalAnimationSection* TypedSection = Cast<UMovieSceneSkeletalAnimationSection>(Section))
+                {
+                    OutSections.Add(TypedSection);
+                }
+            }
+        }
+    }
+    return true;
+}
+
+
+// =============================================================================
+// Debugging Utilities
+// =============================================================================
+
 void UBlendingAutomationBFL::PrintSections(UMovieScene* MovieScene)
 {
     TArray<UMovieSceneSkeletalAnimationSection*> AnimSections;
@@ -496,135 +617,4 @@ void UBlendingAutomationBFL::PrintSections(UMovieScene* MovieScene)
        }
     }
 }
-
-bool UBlendingAutomationBFL::RemoveSectionFromLevelSequence(
-        ULevelSequence* LevelSequence,
-        UMovieScene* MovieScene,
-        int32 SubIndex,
-        TMap<int32, FSectionLabelEntry>& MarkerSectionMap,
-        FFrameRate DisplayRate
-    )
-{   
-    // Remove section
-    FSectionLabelEntry* FoundEntry = MarkerSectionMap.Find(SubIndex);
-
-    // Print the found entry for debugging
-    if (!FoundEntry)
-    {   
-        UE_LOG(LogBlendingAuto, Warning, TEXT("No entry found for SubIndex %d in MarkerSectionMap."), SubIndex);
-        return false;
-    }
-
-        
-    UMovieSceneSkeletalAnimationSection* SectionToRemove = Cast<UMovieSceneSkeletalAnimationSection>(FoundEntry->Section.Get());
-    
-    // get end frame of the section to remove
-    if (!SectionToRemove)
-    {
-        UE_LOG(LogBlendingAuto, Warning, TEXT("Section to remove is null."));
-        return false;
-    }
-
-    FFrameRate TickResolution = MovieScene->GetTickResolution();
-    FFrameTime SectionEndTime = SectionToRemove->GetRange().GetUpperBoundValue();
-    FFrameTime SectionEndDisplayTime = FFrameRate::TransformTime(SectionEndTime, TickResolution, DisplayRate);
-    int32 SectionEndDisplayFrame = SectionEndDisplayTime.FloorToFrame().Value;
-
-    FSequenceOpenResult RemoveResult;
-    bool bRemoveSuccess = USectionAbstraction::RemoveAnimationSection(LevelSequence, SectionToRemove, RemoveResult);
-
-    if (!bRemoveSuccess)
-    {
-        UE_LOG(LogBlendingAuto, Warning, TEXT("Failed to remove animation section: %s"), *RemoveResult.Error);
-        return false;
-    }
-
-    return true;
-}
-
-
-
-
-bool UBlendingAutomationBFL::LoadAnimSequence(UMocapImportSubsystem* MocapSubsystem, 
-    const FString& AnimationPath, 
-    USkeleton* TargetSkeleton, 
-    UAnimSequence*& OutAnimSequence) {
-    
-    OutAnimSequence = nullptr;
-
-    if (!MocapSubsystem)
-    {
-        UE_LOG(LogBlendingAuto, Error, TEXT("LoadAnimSequence: MocapSubsystem is null."));
-        return false;
-    }
-
-    const FString TargetPath = TEXT("/Game/Animations/BlendingAutomation");
-    FString outFirstImportedAssetPath;
-
-    bool importSuccess = MocapSubsystem->importAnimationFromFbx(
-        AnimationPath,
-        TargetPath,
-        TargetSkeleton,
-        true,
-        outFirstImportedAssetPath
-    );
-
-    if (importSuccess && !outFirstImportedAssetPath.IsEmpty())
-    {
-        OutAnimSequence = LoadObject<UAnimSequence>(nullptr, *outFirstImportedAssetPath);
-    }
-
-    return importSuccess && (OutAnimSequence != nullptr);
-
-}
-
-bool UBlendingAutomationBFL::ValidateInputParameters(
-    const FSubstitutionRequest& SubstitutionRequest)
-{
-    if (!SubstitutionRequest.LevelSequence)                  { UE_LOG(LogBlendingAuto, Error, TEXT("LevelSequence is null.")); return false; }
-    if (SubstitutionRequest.OriginalAnimationPath.IsEmpty())   { UE_LOG(LogBlendingAuto, Error, TEXT("OriginalAnimationPath is empty.")); return false; }
-    if (SubstitutionRequest.OriginalAnimationSrtPath.IsEmpty()){ UE_LOG(LogBlendingAuto, Error, TEXT("OriginalAnimationSrtPath is empty.")); return false; }
-    if (SubstitutionRequest.DonorAnimationPath.IsEmpty())      { UE_LOG(LogBlendingAuto, Error, TEXT("DonorAnimationPath is empty.")); return false; }
-    if (SubstitutionRequest.Label.IsEmpty())                  { UE_LOG(LogBlendingAuto, Error, TEXT("Label is empty.")); return false; }
-    if (SubstitutionRequest.SubIndex < 0)                     { UE_LOG(LogBlendingAuto, Error, TEXT("SubIndex is negative.")); return false; }
-
-    return true;
-}
-
-bool UBlendingAutomationBFL::FindAllTracks(UMovieScene* MovieScene, TArray<UMovieSceneSkeletalAnimationTrack*>& OutTracks) {
-    // Iterate through all object bindings (Actors / Components) in Sequencer
-    const UMovieScene* ConstMovieScene = MovieScene;
-    for (const FMovieSceneBinding& Binding : ConstMovieScene->GetBindings())
-    {
-        for (UMovieSceneTrack* Track : MovieScene->FindTracks(UMovieSceneSkeletalAnimationTrack::StaticClass(), Binding.GetObjectGuid()))
-        {
-            if (Track)
-            {
-                OutTracks.Add(Cast<UMovieSceneSkeletalAnimationTrack>(Track));
-            }
-        }
-    }
-    return true;
-}
-
-bool UBlendingAutomationBFL::FindAllSections(UMovieScene* MovieScene, TArray<UMovieSceneSkeletalAnimationSection*>& OutSections) {
-    TArray<UMovieSceneSkeletalAnimationTrack*> Tracks;
-    FindAllTracks(MovieScene, Tracks);
-
-    for (UMovieSceneSkeletalAnimationTrack* Track : Tracks)
-    {
-        if (Track)
-        {
-            for (UMovieSceneSection* Section : Track->GetAllSections())
-            {
-                if (UMovieSceneSkeletalAnimationSection* TypedSection = Cast<UMovieSceneSkeletalAnimationSection>(Section))
-                {
-                    OutSections.Add(TypedSection);
-                }
-            }
-        }
-    }
-    return true;
-}
-
 

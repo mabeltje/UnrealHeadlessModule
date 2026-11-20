@@ -21,10 +21,8 @@ public:
      * @param Label The label used to name the new baked animation sequence.
      */
     static bool BakeAnimationSequence(
-        ULevelSequence* LevelSequence,
-        UMovieScene* MovieScene,
-        FGuid SkeletalMeshBindingId,
-        const FString& Label
+        FSubstitutionContext& Context, 
+        const FSubstitutionRequest& Request
     );
  
 private:
@@ -35,7 +33,7 @@ private:
      * @return True if the SRT file was exported successfully.
      */
     static bool ExportMarkersToSrt(
-        ULevelSequence* LevelSequence, 
+        const FSubstitutionContext& Context,
         const FString& OutputSrtFilePath
     );
 
