@@ -30,6 +30,9 @@
 
 DEFINE_LOG_CATEGORY(LogBlendingAuto);
 
+// ============================================================================
+// Main Pipeline Function and Entry Point to the Unreal Process
+// =============================================================================
 bool UBlendingAutomationBFL::ProcessAnimationSubstitution(
     ULevelSequence* LevelSequence,
     const FString& OriginalAnimationPath,

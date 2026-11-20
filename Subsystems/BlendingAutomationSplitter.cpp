@@ -51,6 +51,7 @@ bool FBlendingAutomationSplitter::PlaceMarkersAndSplit(
     return true;
 }
 
+
 bool FBlendingAutomationSplitter::PlaceMarkersFromVTT(
     FSubstitutionContext& SubstitutionContext,
     const FSubstitutionRequest& SubstitutionRequest) 
@@ -75,6 +76,8 @@ bool FBlendingAutomationSplitter::PlaceMarkersFromVTT(
 
     return bSuccess;
 }
+
+
 bool FBlendingAutomationSplitter::SplitAnimationSection(
     UMovieSceneSkeletalAnimationSection* Section, 
     FSubstitutionContext& SubstitutionContext,
@@ -143,13 +146,6 @@ bool FBlendingAutomationSplitter::SplitAnimationSection(
             // cut at start and end of index 0
         // if end of index 0 is earlier than start of index 1 (there is a transition)
             // cut at start of index 0 and start of index 1
-    
-    // if subindex is last
-        // if end of index - 1 is same as start of index
-            // cut at start and end of index
-        // if end of index - 1 is earlier than start of index
-            // cut at end of index - 1 and end of index
-
     if (bIsFirstSubIndex)
     {
         // Find start marker of next index (SubIndex 1) by scanning forward
@@ -175,6 +171,11 @@ bool FBlendingAutomationSplitter::SplitAnimationSection(
             }
         }
     }
+    // if subindex is last
+    // if end of index - 1 is same as start of index
+        // cut at start and end of index
+    // if end of index - 1 is earlier than start of index
+        // cut at end of index - 1 and end of index
     else if (bIsLastSubIndex)
     {
         // Find end marker of previous index (SubIndex - 1)

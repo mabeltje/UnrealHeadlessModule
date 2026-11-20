@@ -80,4 +80,7 @@ struct FSubstitutionContext
     UMocapImportSubsystem* MocapSubsystem = nullptr;
     TMap<int32, FSectionLabelEntry> MarkerSectionMap;
     TArray<FMovieSceneMarkedFrame> PlacedMarkers;
+
+    // --- Config Asset ---
+    // const USkeletalSequenceDataAsset* Config = nullptr;
 };
