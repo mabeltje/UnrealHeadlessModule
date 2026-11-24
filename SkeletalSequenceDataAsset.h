@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "ControlRig.h"
 #include "Engine/DataAsset.h"
 #include "Misc/FrameRate.h"
 #include "Engine/SkeletalMesh.h"
@@ -67,6 +68,12 @@ public:
 
     UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation Setup")
     TSoftObjectPtr<USkeletalMesh> SkeletalMesh;
+
+    UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation Setup")
+    TSoftObjectPtr<UControlRigBlueprint> ControlRig;
+
+    UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Animation Setup")
+    TSoftClassPtr<UControlRig> ControlRigClass;
 
     // These are not used in the current pipeline, but could be useful for future extensions
 //     /** Direct reference to the Animation Sequence asset */

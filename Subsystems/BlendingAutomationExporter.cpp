@@ -47,7 +47,6 @@ bool FBlendingAutomationExporter::BakeAnimationSequence(
         return false;
     }
 
-    USequencerAbstractionBPLibrary::OpenLevelSequenceInSequencer(SubstitutionRequest.LevelSequence);
     // TODO: Do not hardcode the target package path, make it a parameter or generate it based on the original animation sequence
     FString TargetPackagePath = TEXT("/Game/Animations/BlendingAutomation");
     // TODO: name: originalbase_label_baked, get the name of the original animation sequence and append the label to it

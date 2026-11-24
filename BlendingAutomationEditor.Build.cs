@@ -18,7 +18,11 @@ public class BlendingAutomationEditor : ModuleRules
 
             "SequencerAbstraction",
             "UnrealVTTParser",
-            "AssetFileManagement"
+            "AssetFileManagement",
+
+            "ControlRig",
+            "ControlRigDeveloper",
+            "ControlRigEditor"
         });
 
         PrivateDependencyModuleNames.AddRange(new string[] {

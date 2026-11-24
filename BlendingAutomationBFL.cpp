@@ -157,6 +157,9 @@ bool UBlendingAutomationBFL::LoadAndValidate(
         return false;
     }
 
+    // Open the Level Sequence in the Sequencer to ensure it's ready for editing
+    USequencerAbstractionBPLibrary::OpenLevelSequenceInSequencer(SubstitutionRequest.LevelSequence);
+
     // Load the Config
     // TODO: Do not hardcode the path, make it a parameter or generate it based on the original animation sequence
     USkeletalSequenceDataAsset* SkeletalSequenceDataAsset = LoadObject<USkeletalSequenceDataAsset>(nullptr, TEXT("/Game/Config/AutomationConfig.AutomationConfig"));
@@ -169,7 +172,8 @@ bool UBlendingAutomationBFL::LoadAndValidate(
     // Load the target skeleton from the SkeletalSequenceDataAsset
     SubstitutionContext.TargetSkeleton = SkeletalSequenceDataAsset->Skeleton.LoadSynchronous();
     SubstitutionContext.TargetSkeletalMesh = SkeletalSequenceDataAsset->SkeletalMesh.LoadSynchronous();
-    if (!SubstitutionContext.TargetSkeleton || !SubstitutionContext.TargetSkeletalMesh)
+    SubstitutionContext.ControlRigClass = SkeletalSequenceDataAsset->ControlRigClass.LoadSynchronous();
+    if (!SubstitutionContext.TargetSkeleton || !SubstitutionContext.TargetSkeletalMesh || !SubstitutionContext.ControlRigClass)
     {
         UE_LOG(LogBlendingAuto, Error, TEXT("Failed to load target skeleton or skeletal mesh from SkeletalSequenceDataAsset."));
         return false;

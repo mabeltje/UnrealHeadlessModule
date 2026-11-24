@@ -38,4 +38,11 @@ private:
         int32 SectionIndex
     );
 
+    static bool BakeBindingToControlRig(
+        FSubstitutionContext& SubstitutionContext,
+        const FSubstitutionRequest& SubstitutionRequest
+    );
+
+    static void PrepareTracksForSubstitution(UMovieScene* MovieScene, const FGuid& BindingId);
+
 };

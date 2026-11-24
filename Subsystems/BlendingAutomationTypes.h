@@ -67,6 +67,7 @@ struct FSubstitutionContext
     UMovieScene* MovieScene = nullptr;
     UMovieSceneSkeletalAnimationTrack* Track = nullptr;
     FGuid SkeletalMeshBindingId;
+    TSubclassOf<UControlRig> ControlRigClass = nullptr;
 
     // --- Sequence Timing ---
     FFrameRate DisplayRate;
